@@ -68,6 +68,19 @@ ACTIVE_DTE     = 0                              # 0=today, 1=tomorrow
 ACTIVE_EXPIRY  = ""                             # calculated expiry date
 DRY_RUN        = os.getenv("DRY_RUN", "false").lower() == "true"
 
+# ── News APIs ──────────────────────────────────────────────
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")      # optional: newsapi.org key
+
+# ── Stock Day-Trading Config (stock-only branch) ───────────
+STOCK_MAX_PORTFOLIO      = float(os.getenv("STOCK_MAX_PORTFOLIO",      10_000))
+STOCK_BASE_ALLOCATION    = float(os.getenv("STOCK_BASE_ALLOCATION",     2_000))
+STOCK_MAX_POSITIONS      = int(os.getenv("STOCK_MAX_POSITIONS",             5))
+STOCK_MAX_TRADES_PER_DAY = int(os.getenv("STOCK_MAX_TRADES_PER_DAY",      10))
+STOCK_MAX_DAILY_LOSS_USD = float(os.getenv("STOCK_MAX_DAILY_LOSS_USD",    500))
+STOCK_INITIAL_STOP_PCT   = float(os.getenv("STOCK_INITIAL_STOP_PCT",      -5.0))
+STOCK_NO_NEW_TRADES_TIME = os.getenv("STOCK_NO_NEW_TRADES_PST",        "12:30")
+STOCK_FORCE_EXIT_TIME    = os.getenv("STOCK_FORCE_EXIT_PST",           "12:45")
+
 def validate():
     """Validate all required config is present on startup"""
     errors = []
