@@ -1,0 +1,16 @@
+# SPY Trader — Favorites Configuration
+# Format: TICKER  DTE  MAX_PREMIUM
+# 
+# TICKER:      underlying symbol to trade (SPY, QQQ, etc.)
+# DTE:         0DTE=today, 1DTE=tomorrow, 2DTE=2 days out
+# MAX_PREMIUM: max dollars to spend per contract
+#
+# Examples:
+#   SPY  0DTE  100    → SPY options, today expiry, max $100
+#   SPY  1DTE  150    → SPY options, tomorrow expiry, max $150
+#   QQQ  0DTE  100    → QQQ options, today expiry, max $100
+#
+# Only ONE line is active at a time (first non-comment line wins)
+# Change DTE or MAX_PREMIUM anytime — takes effect next scan
+
+SPY  1DTE  200
