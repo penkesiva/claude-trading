@@ -98,6 +98,7 @@ STOCK_MAX_POSITIONS      = int(os.getenv("STOCK_MAX_POSITIONS",             5))
 STOCK_MAX_TRADES_PER_DAY = int(os.getenv("STOCK_MAX_TRADES_PER_DAY",      10))
 STOCK_MAX_DAILY_LOSS_USD = float(os.getenv("STOCK_MAX_DAILY_LOSS_USD",    500))
 STOCK_INITIAL_STOP_PCT   = float(os.getenv("STOCK_INITIAL_STOP_PCT",      -5.0))
+STOCK_TRAIL_PCT          = float(os.getenv("STOCK_TRAIL_PCT",               3.0))  # % below peak
 STOCK_NO_NEW_TRADES_TIME = os.getenv("STOCK_NO_NEW_TRADES_PST",        "12:30")
 STOCK_FORCE_EXIT_TIME    = os.getenv("STOCK_FORCE_EXIT_PST",           "12:45")
 
