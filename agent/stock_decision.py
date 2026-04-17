@@ -136,7 +136,15 @@ def get_entry_decision(
     pst         = pytz.timezone(config.TIMEZONE)
     now_pst     = datetime.now(pst).strftime("%H:%M")
     market_sum  = morning_thesis.get("market_summary", "")
-    avail_cash  = max(0, config.STOCK_MAX_PORTFOLIO - open_position_count * config.STOCK_BASE_ALLOCATION)
+    # Use real tracked exposure from stock_loop state if available; fall back to estimate
+    try:
+        from agent.stock_loop import state as _loop_state
+        actual_exposure = sum(
+            t.shares * t.entry_price for t in _loop_state["trackers"].values()
+        )
+    except Exception:
+        actual_exposure = open_position_count * config.STOCK_BASE_ALLOCATION
+    avail_cash  = max(0, config.STOCK_MAX_PORTFOLIO - actual_exposure)
     order_cost  = shares * price
 
     # Build analyst signal block for prompt (empty string if no signal)
@@ -228,19 +236,20 @@ def monitor_stock_positions(trackers: dict, daily_pnl: float = 0.0) -> dict:
             for t in trackers
         }
 
-    news = get_market_news(tickers=list(trackers.keys()), hours_back=1)
+    news = get_market_news(tickers=list(trackers.keys()), hours_back=1)  # 60 min
 
     positions_summary = []
     for ticker, tracker in trackers.items():
         quote = get_stock_quote(ticker)
         price = float(quote.get("mid") or 0)
-        status = tracker.update(price) if price else {}
+        # Read P&L without mutating tracker state (update() ratchets the stop)
+        pnl_pct = ((price - tracker.entry_price) / tracker.entry_price) if tracker.entry_price else 0
         positions_summary.append({
             "ticker":       ticker,
             "shares":       tracker.shares,
             "entry":        tracker.entry_price,
             "current":      price,
-            "pnl_pct":      status.get("pnl_pct", 0),
+            "pnl_pct":      round(pnl_pct, 4),
             "pnl_dollar":   round((price - tracker.entry_price) * tracker.shares, 2) if price else 0,
             "peak":         tracker.peak_price,
             "stop":         tracker.stop_price,

@@ -231,7 +231,15 @@ def process_analyst_signals():
         print(f"   ⏭️  Signal queue: {len(signals)} signal(s) skipped — {reason}")
         return
 
-    thesis = state.get("morning_thesis") or {}
+    thesis = state.get("morning_thesis")
+    if thesis is None:
+        print("   ⏭️  Signal queue: morning scan hasn't run yet — signals deferred")
+        # Put them back so they're re-evaluated after the scan runs
+        from tools.signal_queue import push as _push_sig
+        for sig in signals:
+            _push_sig(sig)
+        return
+    thesis = thesis or {}
 
     for sig in signals:
         ticker      = sig["ticker"]
@@ -269,13 +277,14 @@ def process_analyst_signals():
             print(f"   ⏭️  CALL signal {ticker}: already evaluated today — skip")
             continue
 
-        mark_acted(ticker)
-
-        # Re-check capacity before each entry attempt
+        # Re-check capacity before each entry attempt (before consuming the slot)
         can_trade, reason = risk_manager.can_trade(open_positions=len(state["trackers"]))
         if not can_trade:
             print(f"   ⏭️  CALL signal {ticker}: {reason}")
             break
+
+        # Consume the de-duplicate slot only after confirming we can actually trade
+        mark_acted(ticker)
 
         # Find or construct a bias from the morning watchlist
         watchlist_entry = next(
@@ -357,8 +366,9 @@ def run():
     except Exception as e:
         print(f"   ⚠️  Discord poller init failed: {e}")
 
-    # ── Reset daily signal state ───────────────────────────
+    # ── Reset daily state ─────────────────────────────────
     reset_daily()
+    state["force_exit_done"] = False
 
     # ── Wait for market open ───────────────────────────────
     while True:
@@ -388,10 +398,14 @@ def run():
             break
 
         # Force exit window (configurable, default 12:45 PST)
-        if now >= config.STOCK_FORCE_EXIT_TIME and state["trackers"]:
-            print(f"⏰ Force exit time ({now} PST) — closing all positions")
-            for ticker in list(state["trackers"].keys()):
-                execute_exit(ticker, f"force exit at {now} PST")
+        # The flag ensures we attempt force-close exactly once per session
+        if now >= config.STOCK_FORCE_EXIT_TIME and not state.get("force_exit_done"):
+            if state["trackers"]:
+                print(f"⏰ Force exit time ({now} PST) — closing all positions")
+                for ticker in list(state["trackers"].keys()):
+                    execute_exit(ticker, f"force exit at {now} PST")
+            state["force_exit_done"] = True
+            continue  # skip new-entry logic for the rest of this tick
 
         # Daily loss halt
         if risk_manager.halted:

@@ -194,7 +194,7 @@ def _stream_worker():
                                     push_signal(sig)
                                     print(
                                         f"   📣 Signal [@{sig['source_label']}] → "
-                                        f"{sig['ticker']} call "
+                                        f"{sig['ticker']} {sig['signal_type']} "
                                         f"(conf {sig['confidence']:.0%}): "
                                         f"{sig['raw_text'][:60]}…"
                                     )

@@ -254,10 +254,18 @@ def _fetch_channel_messages(channel_id: str) -> list:
         return []
 
 
-def _poll_once():
-    """Poll all configured channels once and append new signals to cache."""
+def _poll_once(signal_cutoff_hours: int = 4):
+    """Poll all configured channels once and append new signals to cache.
+
+    signal_cutoff_hours: only push actionable signals from messages within
+    this many hours. Older messages are added to the news cache (for context)
+    but NOT pushed as trading signals — prevents stale pre-session alerts
+    from triggering entries at market open.
+    """
     from tools.signal_parser import parse_signal
     from tools.signal_queue  import push as push_signal
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=signal_cutoff_hours)
 
     channel_ids = getattr(config, "DISCORD_CHANNEL_IDS", []) or []
     new_articles = []
@@ -274,21 +282,35 @@ def _poll_once():
 
         for msg in messages:
             article = _parse_message(msg)
-            if article:
-                new_articles.append(article)
-                if article["symbols"]:
-                    print(
-                        f"   💬 Discord [{', '.join(article['symbols'])}]: "
-                        f"{article['headline'][:80]}…"
-                    )
-                # Try to extract an actionable call signal and push to queue
-                sig = parse_signal(article)
-                if sig:
-                    push_signal(sig)
-                    print(
-                        f"   📣 Signal [{sig['source_label']}] → {sig['ticker']} call "
-                        f"(conf {sig['confidence']:.0%}): {sig['raw_text'][:60]}…"
-                    )
+            if not article:
+                continue
+
+            new_articles.append(article)
+            if article["symbols"]:
+                print(
+                    f"   💬 Discord [{', '.join(article['symbols'])}]: "
+                    f"{article['headline'][:80]}…"
+                )
+
+            # Only push signals for recent messages — ignore historical backlog
+            try:
+                ts_str = (article.get("published_at") or "").replace("Z", "+00:00")
+                msg_time = datetime.fromisoformat(ts_str)
+                is_recent = msg_time >= cutoff
+            except Exception:
+                is_recent = True  # include if timestamp unparseable
+
+            if not is_recent:
+                continue  # add to news cache above but don't signal-trade old messages
+
+            sig = parse_signal(article)
+            if sig:
+                push_signal(sig)
+                print(
+                    f"   📣 Signal [{sig['source_label']}] → {sig['ticker']} "
+                    f"{sig['signal_type']} (conf {sig['confidence']:.0%}): "
+                    f"{sig['raw_text'][:60]}…"
+                )
 
     if new_articles:
         with _cache_lock:

@@ -149,7 +149,7 @@ Current time: {time_pst} PST
 Open positions (ratchet stops managed by Python):
 {positions_summary}
 
-Recent news (last 30 min):
+Recent news (last 60 min):
 {news_context}
 
 Market notes: {market_notes}
