@@ -37,19 +37,27 @@ parser.add_argument("--dry-run",   action="store_true", help="Decide but never p
 args = parser.parse_args()
 
 # ── Apply mode overrides BEFORE importing config ───────────
-if args.paper:
-    os.environ["PAPER_MODE"] = "true"
-    print("📄 Mode: PAPER TRADING")
-elif args.live:
+# Safety default: always paper unless --live is explicitly passed.
+# This overrides whatever PAPER_MODE is set to in .env so there is
+# no way to accidentally go live by omitting a flag.
+if args.live:
     os.environ["PAPER_MODE"] = "false"
     print("🔴 Mode: LIVE TRADING")
-    print("\n⚠️  WARNING: This will trade with REAL MONEY.")
+    print("\n⚠️  WARNING: This will place REAL orders with REAL MONEY.")
+    print("   Make sure paper trading has been validated first.")
     print("   Press Enter to continue or Ctrl+C to cancel...")
     try:
         input()
     except KeyboardInterrupt:
         print("\n   Cancelled.")
         sys.exit(0)
+else:
+    # --paper OR no flag at all → always safe
+    os.environ["PAPER_MODE"] = "true"
+    if args.paper:
+        print("📄 Mode: PAPER TRADING")
+    else:
+        print("📄 Mode: PAPER TRADING (default — pass --live for real money)")
 
 if args.dry_run:
     os.environ["DRY_RUN"] = "true"
@@ -60,6 +68,58 @@ import config
 config.DRY_RUN = args.dry_run
 
 config.validate()
+
+# ── Live-mode pre-flight checks ────────────────────────────
+if not config.PAPER_MODE and not config.DRY_RUN:
+    from tools.alpaca_stock_tools import get_account_summary
+    acct = get_account_summary()
+    if acct.get("error"):
+        print(f"❌ Cannot connect to live Alpaca account: {acct['error']}")
+        sys.exit(1)
+
+    equity       = acct["equity"]
+    buying_power = acct["buying_power"]
+    daytrades    = acct["daytrades"]
+
+    print(f"\n📋 Live Account Check:")
+    print(f"   Equity:        ${equity:,.2f}")
+    print(f"   Buying power:  ${buying_power:,.2f}")
+    print(f"   Day trades (5-day window): {daytrades}")
+
+    # Block if buying power is critically low
+    if buying_power < config.STOCK_BASE_ALLOCATION:
+        print(f"\n❌ Insufficient buying power (${buying_power:,.0f}) — need at least ${config.STOCK_BASE_ALLOCATION:,.0f} for one position.")
+        sys.exit(1)
+
+    if buying_power < config.STOCK_MAX_PORTFOLIO * 0.5:
+        print(f"\n⚠️  Buying power ${buying_power:,.0f} is less than half of STOCK_MAX_PORTFOLIO (${config.STOCK_MAX_PORTFOLIO:,.0f}).")
+        print("   Consider lowering STOCK_MAX_PORTFOLIO in .env to match actual funds.")
+
+    # PDT warning: < $25K equity + ≥ 3 day trades in rolling 5 days
+    PDT_THRESHOLD = 25_000
+    if equity < PDT_THRESHOLD:
+        remaining_dt = max(0, 3 - daytrades)
+        print(f"\n⚠️  PDT WARNING: Account equity ${equity:,.0f} < $25,000.")
+        print(f"   You have {daytrades}/3 day trades used in the last 5 days.")
+        if remaining_dt == 0:
+            print("   ❌ No day trades remaining — all orders today will be REJECTED by Alpaca.")
+            print("   Wait until the 5-day window rolls over, or deposit funds to reach $25K.")
+            print("   Press Enter to exit, or Ctrl+C to proceed anyway (orders will fail)...")
+            try:
+                input()
+                sys.exit(0)
+            except KeyboardInterrupt:
+                print("   ⚠️  Proceeding despite PDT limit — orders will likely be rejected.")
+        else:
+            print(f"   You can open/close {remaining_dt} more round-trip(s) today.")
+            print(f"   STOCK_MAX_TRADES_PER_DAY is set to {config.STOCK_MAX_TRADES_PER_DAY} — consider lowering it to {remaining_dt} in .env.")
+
+    print(f"\n   ✅ Live pre-flight passed.  Press Enter to start trading, Ctrl+C to cancel...")
+    try:
+        input()
+    except KeyboardInterrupt:
+        print("\n   Cancelled.")
+        sys.exit(0)
 
 print(f"\n{'='*60}")
 print(

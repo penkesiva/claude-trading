@@ -395,6 +395,29 @@ def run():
     reset_daily()
     state["force_exit_done"] = False
 
+    # ── Live mode: reconcile any positions already open in Alpaca ──
+    # If the bot crashed and restarted mid-session it could have open
+    # positions it no longer tracks.  Re-adopt them so the ratchet stop
+    # and force-exit still fire for those positions.
+    if not config.PAPER_MODE and not config.DRY_RUN:
+        from tools.alpaca_stock_tools import get_stock_positions
+        existing = get_stock_positions()
+        if existing:
+            print(f"\n⚠️  Found {len(existing)} open position(s) in live account — re-adopting:")
+            for p in existing:
+                tkr   = p["ticker"]
+                qty   = p["qty"]
+                entry = p["entry_price"]
+                if tkr not in state["trackers"]:
+                    state["trackers"][tkr] = RatchetTracker(
+                        tkr, entry, qty, source="re-adopted (pre-existing)", entry_time=_pst_now()
+                    )
+                    print(
+                        f"   ↩️  {tkr}: {qty}sh @ ${entry:.2f}  "
+                        f"(stop set to ${state['trackers'][tkr].stop_price:.2f})"
+                    )
+            print()
+
     # ── Wait for market open ───────────────────────────────
     while True:
         now = _pst_now()
