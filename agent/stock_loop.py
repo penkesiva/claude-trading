@@ -23,8 +23,7 @@ from agent.stock_decision import run_morning_scan, get_entry_decision, monitor_s
 from agent.stock_exits import RatchetTracker, StockRiskManager
 from tools.alpaca_stock_tools import (
     place_stock_order,
-    close_stock_position,
-    close_all_stock_positions,
+    get_order_fill,
     get_stock_quote,
 )
 from tools.logger import log_trade, log_error, log_pnl
@@ -100,6 +99,7 @@ def execute_entry(ticker: str, decision: dict) -> bool:
     if config.DRY_RUN:
         print(f"   🔍 DRY RUN — order not placed")
         result = {"id": "DRY_RUN", "status": "simulated"}
+        fill_price = price  # use quote as entry price in dry-run
     else:
         result = place_stock_order(ticker, shares, "buy")
 
@@ -108,13 +108,26 @@ def execute_entry(ticker: str, decision: dict) -> bool:
         print(f"❌ Order failed: {result['error']}")
         return False
 
-    state["trackers"][ticker] = RatchetTracker(ticker, price, shares)
+    # Wait for actual fill price — use it for accurate stop and P&L tracking
+    if not config.DRY_RUN:
+        order_id = result.get("id", "")
+        fill_price = get_order_fill(order_id, timeout_secs=15) if order_id else None
+        if fill_price:
+            if abs(fill_price - price) > 0.01:
+                print(f"   📋 Fill price: ${fill_price:.2f} (quote was ${price:.2f}, slippage ${fill_price - price:+.2f})")
+        else:
+            fill_price = price  # fallback to quote if poll times out
+            print(f"   ⚠️  Could not confirm fill price — using quote ${price:.2f}")
+
+    state["trackers"][ticker] = RatchetTracker(ticker, fill_price, shares)
 
     log_trade({
         "symbol":     ticker,
         "side":       "buy",
         "qty":        shares,
         "order_id":   result.get("id"),
+        "fill_price": fill_price,
+        "quote_price": price,
         "rationale":  decision.get("entry_rationale"),
         "confidence": confidence,
         "status":     result.get("status"),
@@ -123,7 +136,7 @@ def execute_entry(ticker: str, decision: dict) -> bool:
     tracker = state["trackers"][ticker]
     print(
         f"✅ Opened {ticker} | {shares}sh | "
-        f"entry ${price:.2f} | stop ${tracker.stop_price:.2f}"
+        f"entry ${fill_price:.2f} | stop ${tracker.stop_price:.2f}"
     )
     return True
 
@@ -133,45 +146,63 @@ def execute_entry(ticker: str, decision: dict) -> bool:
 # ──────────────────────────────────────────────────────────
 
 def execute_exit(ticker: str, reason: str) -> bool:
-    """Sell all shares of `ticker`."""
+    """Sell exactly the shares we opened this session for `ticker`.
+
+    We deliberately avoid Alpaca's 'close entire position' endpoint so that
+    any pre-existing shares in the account (opened manually or in a prior
+    session) are never touched.
+    """
     print(f"📤 SELL {ticker} | {reason}")
     tracker = state["trackers"].get(ticker)
 
+    if not tracker:
+        print(f"   ⚠️  {ticker}: no tracker found — nothing to sell")
+        return False
+
+    shares = tracker.shares   # only the qty WE opened
+
     if config.DRY_RUN:
-        print(f"   🔍 DRY RUN — not placed")
+        print(f"   🔍 DRY RUN — would sell {shares}sh {ticker}")
         result = {}
+        exit_fill = float(get_stock_quote(ticker).get("mid") or 0)
     else:
-        result = close_stock_position(ticker)
+        # Sell exactly our share count — never touches pre-existing positions
+        result = place_stock_order(ticker, shares, "sell")
 
     if result.get("error"):
-        # Fallback: explicit sell order
-        shares = tracker.shares if tracker else 1
-        sell = place_stock_order(ticker, shares, "sell")
-        if sell.get("error"):
-            log_error("stock_execute_exit", sell["error"])
-            print(f"❌ Exit failed: {sell['error']}")
-            return False
+        log_error("stock_execute_exit", result["error"])
+        print(f"❌ Exit failed: {result['error']}")
+        return False
+
+    # Wait for actual fill price for accurate P&L
+    if not config.DRY_RUN:
+        order_id = result.get("id", "")
+        exit_fill = get_order_fill(order_id, timeout_secs=15) if order_id else None
+        if not exit_fill:
+            # Fallback: use mid quote if fill poll times out
+            exit_fill = float(get_stock_quote(ticker).get("mid") or 0)
+            print(f"   ⚠️  Could not confirm exit fill — using quote ${exit_fill:.2f}")
 
     state["trackers"].pop(ticker, None)
 
-    quote      = get_stock_quote(ticker)
-    exit_price = float(quote.get("mid") or 0)
     pnl = 0.0
-    if tracker and exit_price:
-        pnl = (exit_price - tracker.entry_price) * tracker.shares
+    if tracker and exit_fill:
+        pnl = (exit_fill - tracker.entry_price) * tracker.shares
 
     risk_manager.record_trade(pnl)
 
     log_trade({
-        "symbol": ticker,
-        "side":   "sell",
-        "qty":    tracker.shares if tracker else 0,
-        "pnl":    pnl,
-        "reason": reason,
+        "symbol":     ticker,
+        "side":       "sell",
+        "qty":        tracker.shares if tracker else 0,
+        "fill_price": exit_fill,
+        "entry_price": tracker.entry_price if tracker else 0,
+        "pnl":        pnl,
+        "reason":     reason,
     })
 
     emoji = "🟢" if pnl >= 0 else "🔴"
-    print(f"{emoji} Closed {ticker} | P&L ${pnl:+.2f} | {reason}")
+    print(f"{emoji} Closed {ticker} | fill ${exit_fill:.2f} | P&L ${pnl:+.2f} | {reason}")
     return True
 
 

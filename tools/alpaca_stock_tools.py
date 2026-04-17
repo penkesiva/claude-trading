@@ -171,6 +171,33 @@ def place_stock_order(
         return {"error": str(e)}
 
 
+def get_order_fill(order_id: str, timeout_secs: int = 15) -> Optional[float]:
+    """
+    Poll until the order is filled and return the average fill price.
+    Returns None if the order doesn't fill within timeout_secs or on error.
+
+    Market orders in liquid stocks typically fill in < 1 second during market hours.
+    """
+    import time as _t
+    deadline = _t.time() + timeout_secs
+    while _t.time() < deadline:
+        try:
+            r = requests.get(f"{BASE}/v2/orders/{order_id}", headers=_headers(), timeout=8)
+            if not r.ok:
+                return None
+            o = r.json()
+            status = o.get("status", "")
+            filled_avg = o.get("filled_avg_price")
+            if status == "filled" and filled_avg:
+                return float(filled_avg)
+            if status in ("canceled", "expired", "rejected"):
+                return None
+        except Exception:
+            return None
+        _t.sleep(0.5)
+    return None
+
+
 def close_stock_position(ticker: str) -> dict:
     """Close (market sell) the full position in a single stock."""
     sym = ticker.upper().strip()
