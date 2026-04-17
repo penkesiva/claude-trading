@@ -3,27 +3,31 @@ agent/stock_exits.py
 Ratcheting trailing-stop logic and daily risk manager for stock day trading.
 
 How ratcheting works:
-  Entry:          stop = entry - 5%   (full initial risk)
-  Peak gain ≥ 3%: stop → entry - 2%  (cut loss in half)
-  Peak gain ≥ 5%: stop → entry + 1%  (locked in some profit)
-  Peak gain ≥ 8%: stop → entry + 4%
-  Peak gain ≥ 12%: stop → entry + 8%
-  Peak gain ≥ 20%: stop → entry + 15%
+  Entry:            stop = entry - 5%   (full initial risk)
+  Peak gain ≥ 1.5%: stop → entry - 1%  (low-vol stocks, e.g. GOOGL/MSFT/AAPL)
+  Peak gain ≥ 3%:   stop → entry - 2%  (cut loss in half)
+  Peak gain ≥ 5%:   stop → entry + 1%  (locked in some profit)
+  Peak gain ≥ 8%:   stop → entry + 4%
+  Peak gain ≥ 12%:  stop → entry + 8%
+  Peak gain ≥ 20%:  stop → entry + 15%
 
 Stops only ever move UP — they never retreat on a pullback.
+The 1.5% trigger ensures even low-volatility mega-caps (GOOGL, MSFT, AAPL)
+start protecting capital on modest intraday moves, not just high-vol names.
 """
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import config
 
-# (min peak gain %, new stop % relative to entry)
+# (min peak gain %, new stop % relative to entry) — ordered highest → lowest
 _RATCHET_LEVELS = [
     (20.0, 15.0),
     (12.0,  8.0),
     ( 8.0,  4.0),
     ( 5.0,  1.0),
     ( 3.0, -2.0),
+    ( 1.5, -1.0),  # kicks in early for low-vol stocks that rarely move 3%+
 ]
 
 
