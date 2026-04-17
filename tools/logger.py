@@ -39,7 +39,7 @@ def _append_json(filepath: str, entry: dict):
 # ──────────────────────────────────────────────────────────
 
 def log_decision(signal_snapshot: dict, claude_reasoning: str, action: str, trade: dict = None):
-    """Log Claude's full reasoning and decision"""
+    """Log Claude's full reasoning and decision (file only — no console noise)."""
     entry = {
         "timestamp":  _now(),
         "signals":    signal_snapshot,
@@ -48,13 +48,11 @@ def log_decision(signal_snapshot: dict, claude_reasoning: str, action: str, trad
         "trade":      trade,
     }
     _append_json(_log_path("decisions.json"), entry)
-    print(f"[{_now()}] 🧠 Decision logged: {action}")
 
 def log_trade(trade: dict):
-    """Log an executed trade"""
+    """Persist trade to trades.json (file only — entry/exit prints own summary line)."""
     trade["logged_at"] = _now()
     _append_json(_log_path("trades.json"), trade)
-    print(f"[{_now()}] 📝 Trade logged: {trade.get('symbol')} {trade.get('side')}")
 
 def log_error(context: str, error: str):
     """Log an error"""

@@ -51,93 +51,108 @@ def _pst_now() -> str:
     return datetime.now(pytz.timezone(config.TIMEZONE)).strftime("%H:%M")
 
 
+def _pst_now_full() -> str:
+    """HH:MM with seconds for trade prints."""
+    return datetime.now(pytz.timezone(config.TIMEZONE)).strftime("%H:%M:%S")
+
+
+def _hold_mins(entry_time: str) -> str:
+    """Return 'Xm' since entry_time (HH:MM)."""
+    try:
+        now = datetime.now(pytz.timezone(config.TIMEZONE))
+        h, m = map(int, entry_time.split(":"))
+        entry = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        mins = int((now - entry).total_seconds() / 60)
+        return f"{mins}m"
+    except Exception:
+        return "?"
+
+
 def _print_status():
     state["scan_count"] += 1
-    pos_str = ", ".join(state["trackers"].keys()) or "none"
+    n   = len(state["trackers"])
+    pos = f"{n} open ({', '.join(state['trackers'].keys())})" if n else "no positions"
     print(f"\n{'─'*60}")
-    print(f"🔄 Scan #{state['scan_count']} | {_pst_now()} PST | {risk_manager.summary()}")
-    print(f"   Open: {pos_str}")
+    print(f"  {_pst_now()} PST  |  {risk_manager.summary()}  |  {pos}")
 
 
 # ──────────────────────────────────────────────────────────
 # EXECUTE ENTRY
 # ──────────────────────────────────────────────────────────
 
-def execute_entry(ticker: str, decision: dict) -> bool:
+def execute_entry(ticker: str, decision: dict, signal_source: str = "morning scan") -> bool:
     """Buy whole shares of `ticker` based on Claude's decision."""
     shares = int(decision.get("shares") or 0)
     price  = float(decision.get("current_price") or 0)
 
     if shares < 1 or price <= 0:
-        print(f"⏭️  {ticker}: shares={shares} price={price} — skipping")
         return False
 
-    # Portfolio-level guard
-    current_exposure = sum(
-        t.shares * t.entry_price for t in state["trackers"].values()
-    )
+    current_exposure = sum(t.shares * t.entry_price for t in state["trackers"].values())
     order_cost = shares * price
     if current_exposure + order_cost > config.STOCK_MAX_PORTFOLIO * 1.05:
-        print(
-            f"⏭️  {ticker}: portfolio limit — "
-            f"${current_exposure:.0f} + ${order_cost:.0f} > ${config.STOCK_MAX_PORTFOLIO:.0f}"
-        )
+        print(f"   ⏭️  {ticker}: portfolio cap reached — skip")
         return False
 
     can_trade, reason = risk_manager.can_trade(open_positions=len(state["trackers"]))
     if not can_trade:
-        print(f"🛑 Risk gate: {reason}")
+        print(f"   🛑 {ticker}: {reason}")
         return False
 
     confidence = float(decision.get("confidence") or 0)
     if confidence < 0.60:
-        print(f"⏭️  {ticker}: confidence {confidence:.0%} < 60% — skipping")
+        print(f"   ⏭️  {ticker}: confidence {confidence:.0%} < 60% — skip")
         return False
 
-    print(f"📤 BUY {shares}sh {ticker} @ ~${price:.2f}  (${order_cost:.0f})")
-
     if config.DRY_RUN:
-        print(f"   🔍 DRY RUN — order not placed")
         result = {"id": "DRY_RUN", "status": "simulated"}
-        fill_price = price  # use quote as entry price in dry-run
+        fill_price = price
     else:
         result = place_stock_order(ticker, shares, "buy")
 
     if result.get("error"):
         log_error("stock_execute_entry", result["error"])
-        print(f"❌ Order failed: {result['error']}")
+        print(f"   ❌ {ticker}: order failed — {result['error']}")
         return False
 
-    # Wait for actual fill price — use it for accurate stop and P&L tracking
     if not config.DRY_RUN:
         order_id = result.get("id", "")
         fill_price = get_order_fill(order_id, timeout_secs=15) if order_id else None
-        if fill_price:
-            if abs(fill_price - price) > 0.01:
-                print(f"   📋 Fill price: ${fill_price:.2f} (quote was ${price:.2f}, slippage ${fill_price - price:+.2f})")
-        else:
-            fill_price = price  # fallback to quote if poll times out
-            print(f"   ⚠️  Could not confirm fill price — using quote ${price:.2f}")
+        if not fill_price:
+            fill_price = price  # fallback to quote
 
-    state["trackers"][ticker] = RatchetTracker(ticker, fill_price, shares)
+    now_str = _pst_now_full()
+    state["trackers"][ticker] = RatchetTracker(
+        ticker, fill_price, shares, source=signal_source, entry_time=_pst_now()
+    )
+    tracker = state["trackers"][ticker]
+
+    slippage_str = ""
+    if not config.DRY_RUN and abs(fill_price - price) >= 0.05:
+        slippage_str = f"  slip ${fill_price - price:+.2f}"
+
+    dry_tag = "  [DRY RUN]" if config.DRY_RUN else ""
+    print(
+        f"\n  ✅ ENTERED  {ticker}{dry_tag}"
+        f"\n     {shares}sh @ ${fill_price:.2f}{slippage_str}  =  ${fill_price*shares:,.0f}"
+        f"\n     stop ${tracker.stop_price:.2f}  |  conf {confidence:.0%}"
+        f"\n     catalyst: {(decision.get('news_thesis') or decision.get('entry_rationale') or '')[:80]}"
+        f"\n     source: {signal_source}  |  time: {now_str} PST"
+    )
 
     log_trade({
-        "symbol":     ticker,
-        "side":       "buy",
-        "qty":        shares,
-        "order_id":   result.get("id"),
-        "fill_price": fill_price,
+        "symbol":      ticker,
+        "side":        "buy",
+        "qty":         shares,
+        "order_id":    result.get("id"),
+        "fill_price":  fill_price,
         "quote_price": price,
-        "rationale":  decision.get("entry_rationale"),
-        "confidence": confidence,
-        "status":     result.get("status"),
+        "source":      signal_source,
+        "rationale":   decision.get("entry_rationale"),
+        "confidence":  confidence,
+        "status":      result.get("status"),
+        "time":        now_str,
     })
-
-    tracker = state["trackers"][ticker]
-    print(
-        f"✅ Opened {ticker} | {shares}sh | "
-        f"entry ${fill_price:.2f} | stop ${tracker.stop_price:.2f}"
-    )
     return True
 
 
@@ -152,57 +167,61 @@ def execute_exit(ticker: str, reason: str) -> bool:
     any pre-existing shares in the account (opened manually or in a prior
     session) are never touched.
     """
-    print(f"📤 SELL {ticker} | {reason}")
     tracker = state["trackers"].get(ticker)
-
     if not tracker:
-        print(f"   ⚠️  {ticker}: no tracker found — nothing to sell")
+        print(f"   ⚠️  {ticker}: no open position tracked — nothing to sell")
         return False
 
     shares = tracker.shares   # only the qty WE opened
 
     if config.DRY_RUN:
-        print(f"   🔍 DRY RUN — would sell {shares}sh {ticker}")
         result = {}
         exit_fill = float(get_stock_quote(ticker).get("mid") or 0)
     else:
-        # Sell exactly our share count — never touches pre-existing positions
         result = place_stock_order(ticker, shares, "sell")
 
     if result.get("error"):
         log_error("stock_execute_exit", result["error"])
-        print(f"❌ Exit failed: {result['error']}")
+        print(f"   ❌ {ticker}: exit order failed — {result['error']}")
         return False
 
-    # Wait for actual fill price for accurate P&L
     if not config.DRY_RUN:
         order_id = result.get("id", "")
         exit_fill = get_order_fill(order_id, timeout_secs=15) if order_id else None
         if not exit_fill:
-            # Fallback: use mid quote if fill poll times out
             exit_fill = float(get_stock_quote(ticker).get("mid") or 0)
-            print(f"   ⚠️  Could not confirm exit fill — using quote ${exit_fill:.2f}")
 
     state["trackers"].pop(ticker, None)
 
-    pnl = 0.0
-    if tracker and exit_fill:
-        pnl = (exit_fill - tracker.entry_price) * tracker.shares
-
+    pnl = (exit_fill - tracker.entry_price) * tracker.shares if exit_fill else 0.0
     risk_manager.record_trade(pnl)
 
-    log_trade({
-        "symbol":     ticker,
-        "side":       "sell",
-        "qty":        tracker.shares if tracker else 0,
-        "fill_price": exit_fill,
-        "entry_price": tracker.entry_price if tracker else 0,
-        "pnl":        pnl,
-        "reason":     reason,
-    })
+    pnl_pct  = pnl / (tracker.entry_price * tracker.shares) * 100 if tracker.entry_price else 0
+    emoji    = "🟢" if pnl >= 0 else "🔴"
+    held     = _hold_mins(tracker.entry_time)
+    dry_tag  = "  [DRY RUN]" if config.DRY_RUN else ""
 
-    emoji = "🟢" if pnl >= 0 else "🔴"
-    print(f"{emoji} Closed {ticker} | fill ${exit_fill:.2f} | P&L ${pnl:+.2f} | {reason}")
+    print(
+        f"\n  {emoji} EXITED   {ticker}{dry_tag}"
+        f"\n     entry ${tracker.entry_price:.2f}  →  exit ${exit_fill:.2f}"
+        f"  |  P&L ${pnl:+.2f} ({pnl_pct:+.1f}%)"
+        f"\n     held {held}  |  reason: {reason}"
+        f"\n     source: {tracker.source}  |  daily P&L: ${risk_manager.daily_pnl:+.2f}"
+    )
+
+    log_trade({
+        "symbol":      ticker,
+        "side":        "sell",
+        "qty":         tracker.shares,
+        "fill_price":  exit_fill,
+        "entry_price": tracker.entry_price,
+        "pnl":         round(pnl, 2),
+        "pnl_pct":     round(pnl_pct, 2),
+        "held_mins":   held,
+        "source":      tracker.source,
+        "reason":      reason,
+        "time":        _pst_now_full(),
+    })
     return True
 
 
@@ -244,49 +263,41 @@ def process_analyst_signals():
     for sig in signals:
         ticker      = sig["ticker"]
         signal_type = sig.get("signal_type", "call")
-
-        print(
-            f"\n   📣 ANALYST SIGNAL → {ticker} [{signal_type.upper()}] | "
-            f"from [{sig['source_label']}] | conf {sig['confidence']:.0%}"
+        src_label   = sig.get("source_label", sig.get("source", "unknown"))
+        src_type    = sig.get("source", "unknown")   # "discord" | "twitter"
+        src_display = (
+            f"Discord: {src_label}" if src_type == "discord"
+            else f"Twitter: @{src_label}"
         )
-        print(f"      \"{sig['raw_text'][:120]}\"")
 
         # ── PUT signal: sell the stock if we're holding it ──────
         if signal_type == "put":
             if ticker in state["trackers"]:
-                execute_exit(
-                    ticker,
-                    f"analyst PUT signal from [{sig['source_label']}]: "
-                    f"{sig['raw_text'][:60]}",
-                )
-            else:
-                print(f"   ⏭️  PUT signal {ticker}: not in portfolio — nothing to sell")
+                print(f"\n  📣 PUT signal  {ticker} from {src_display} (conf {sig['confidence']:.0%})")
+                print(f"     \"{sig['raw_text'][:100]}\"")
+                execute_exit(ticker, f"PUT signal from {src_display}")
             # Don't mark_acted for puts — a subsequent call signal should still be evaluated
             continue
 
         # ── CALL signal: evaluate entry ─────────────────────────
 
-        # Skip if already holding this ticker
         if ticker in state["trackers"]:
-            print(f"   ⏭️  CALL signal {ticker}: already in portfolio — skip")
             mark_acted(ticker)
-            continue
+            continue  # already holding — no noise
 
-        # Skip if already acted on this ticker's signal today
         if already_acted(ticker):
-            print(f"   ⏭️  CALL signal {ticker}: already evaluated today — skip")
-            continue
+            continue  # already evaluated today — silent skip
 
-        # Re-check capacity before each entry attempt (before consuming the slot)
         can_trade, reason = risk_manager.can_trade(open_positions=len(state["trackers"]))
         if not can_trade:
-            print(f"   ⏭️  CALL signal {ticker}: {reason}")
+            print(f"   ⏭️  CALL {ticker} from {src_display}: {reason}")
             break
 
-        # Consume the de-duplicate slot only after confirming we can actually trade
         mark_acted(ticker)
 
-        # Find or construct a bias from the morning watchlist
+        print(f"\n  📣 CALL signal  {ticker} from {src_display} (conf {sig['confidence']:.0%})")
+        print(f"     \"{sig['raw_text'][:100]}\"")
+
         watchlist_entry = next(
             (s for s in thesis.get("watchlist", []) if s.get("ticker") == ticker),
             None,
@@ -303,10 +314,10 @@ def process_analyst_signals():
         )
 
         if decision.get("action") == "ENTER":
-            execute_entry(ticker, decision)
+            execute_entry(ticker, decision, signal_source=src_display)
         else:
             print(
-                f"   ⏭️  Claude skipped CALL signal {ticker}: "
+                f"   ⏭️  Claude skipped {ticker}: "
                 f"{decision.get('entry_rationale', '')[:80]}"
             )
 
@@ -317,6 +328,9 @@ def process_analyst_signals():
 
 def run_ratchet_check():
     """Check all open positions against their ratcheting stops."""
+    if not state["trackers"]:
+        return
+    lines = []
     for ticker in list(state["trackers"].keys()):
         tracker = state["trackers"].get(ticker)
         if not tracker:
@@ -324,17 +338,19 @@ def run_ratchet_check():
         quote = get_stock_quote(ticker)
         price = float(quote.get("mid") or 0)
         if not price:
-            print(f"   ⚠️  {ticker}: no quote — skipping ratchet check")
             continue
         result = tracker.update(price)
         if result.get("exit"):
             execute_exit(ticker, result["reason"])
         else:
-            print(
-                f"   📊 {ticker}: ${price:.2f} | "
-                f"P&L {result['pnl_pct']:+.1f}% (${result['pnl_dollar']:+.0f}) | "
-                f"stop ${result['stop']:.2f} [{result['level']}]"
+            held = _hold_mins(tracker.entry_time)
+            lines.append(
+                f"   📊 {ticker}  ${price:.2f}"
+                f"  P&L {result['pnl_pct']:+.1f}% (${result['pnl_dollar']:+.0f})"
+                f"  stop ${result['stop']:.2f}  held {held}"
             )
+    if lines:
+        print("\n".join(lines))
 
 
 # ──────────────────────────────────────────────────────────
@@ -343,13 +359,22 @@ def run_ratchet_check():
 
 def run():
     """Entry point called from stock_main.py."""
+    twitter_accts  = ", ".join(f"@{a}" for a in (getattr(config, "TWITTER_ACCOUNTS", []) or []))
+    discord_ids    = getattr(config, "DISCORD_CHANNEL_IDS", []) or []
+    signal_sources = []
+    if twitter_accts:
+        signal_sources.append(f"Twitter ({twitter_accts})")
+    if discord_ids:
+        signal_sources.append(f"Discord ({len(discord_ids)} channel{'s' if len(discord_ids)!=1 else ''})")
+    if not signal_sources:
+        signal_sources.append("morning scan only")
+
     print("\n" + "=" * 60)
     print(f"{'📄 PAPER' if config.PAPER_MODE else '🔴 LIVE'} STOCK DAY TRADER")
-    print(f"   Portfolio max:  ${config.STOCK_MAX_PORTFOLIO:,.0f}")
-    print(f"   Per position:   ${config.STOCK_BASE_ALLOCATION:,.0f} baseline")
-    print(f"   Max positions:  {config.STOCK_MAX_POSITIONS}")
-    print(f"   Initial stop:   {config.STOCK_INITIAL_STOP_PCT:+.0f}%  (ratchets up)")
-    print(f"   Force exit:     {config.STOCK_FORCE_EXIT_TIME} PST")
+    print(f"   Portfolio max:  ${config.STOCK_MAX_PORTFOLIO:,.0f}  |  per position ${config.STOCK_BASE_ALLOCATION:,.0f}")
+    print(f"   Max positions:  {config.STOCK_MAX_POSITIONS}  |  stop {config.STOCK_INITIAL_STOP_PCT:+.0f}% ratcheting")
+    print(f"   Force exit:     {config.STOCK_FORCE_EXIT_TIME} PST  |  no new trades after {config.STOCK_NO_NEW_TRADES_TIME} PST")
+    print(f"   Signal sources: {', '.join(signal_sources)}")
     print("=" * 60 + "\n")
 
     # ── Start background signal threads ────────────────────
@@ -451,10 +476,10 @@ def run():
                     "market_bias", state["morning_thesis"].get("market_bias", "mixed")
                 )
                 added = [s["ticker"] for s in new_picks]
-                print(
-                    f"   ✅ Re-scan complete. "
-                    f"New tickers added: {added if added else 'none (all already on list)'}"
-                )
+                if added:
+                    print(f"   ✅ Re-scan: added {', '.join(added)} to watchlist")
+                else:
+                    print(f"   ✅ Re-scan: watchlist unchanged")
             state["midday_scan_done"] = True
 
         # ── Claude calls (every 5 min) ─────────────────────
@@ -470,9 +495,9 @@ def run():
                 )
                 for ticker, d in decisions.items():
                     if d.get("action") == "EXIT":
-                        execute_exit(ticker, f"Claude: {d.get('rationale', '')}")
+                        execute_exit(ticker, f"Claude: {d.get('rationale', '')[:80]}")
 
-            # 2. Look for new entries
+            # 2. Look for new entries from watchlist
             if now < config.STOCK_NO_NEW_TRADES_TIME:
                 can_trade, reason = risk_manager.can_trade(
                     open_positions=len(state["trackers"])
@@ -493,24 +518,17 @@ def run():
                             open_position_count=len(state["trackers"]),
                         )
                         if decision.get("action") == "ENTER":
-                            execute_entry(ticker, decision)
-                else:
-                    print(f"   ⏭️  {reason}")
-            else:
-                print(f"   ⏭️  No new entries after {config.STOCK_NO_NEW_TRADES_TIME} PST")
+                            execute_entry(ticker, decision, signal_source="morning scan")
 
-            secs_to_next = CLAUDE_CALL_INTERVAL
-        else:
-            secs_to_next = int(CLAUDE_CALL_INTERVAL - (now_ts - state["last_claude_call_time"]))
-            print(f"   ⏳ Next Claude call in {secs_to_next}s")
-
-        sleep_secs = min(60, max(10, secs_to_next))
-        print(f"   💤 Next scan in {sleep_secs}s")
+        sleep_secs = min(60, max(10, int(
+            CLAUDE_CALL_INTERVAL - (_time.time() - state["last_claude_call_time"])
+        )))
         _time.sleep(sleep_secs)
 
     # ── End of day summary ─────────────────────────────────
+    emoji = "🟢" if risk_manager.daily_pnl >= 0 else "🔴"
     print("\n" + "=" * 60)
-    print("📊 END OF DAY — STOCK TRADER")
-    print(f"   {risk_manager.summary()}")
+    print(f"{emoji} END OF DAY — STOCK TRADER")
+    print(f"   Daily P&L: ${risk_manager.daily_pnl:+.2f}  |  Trades: {risk_manager.trades_today}")
     print("=" * 60)
     log_pnl(risk_manager.daily_pnl, risk_manager.trades_today)

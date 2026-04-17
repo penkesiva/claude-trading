@@ -30,7 +30,9 @@ _RATCHET_LEVELS = [
 class RatchetTracker:
     """Tracks ratcheting trailing stop for one open stock position."""
 
-    def __init__(self, ticker: str, entry_price: float, shares: int):
+    def __init__(self, ticker: str, entry_price: float, shares: int,
+                 source: str = "morning scan", entry_time: str = ""):
+        import datetime as _dt, pytz as _pytz, config as _cfg
         self.ticker       = ticker.upper().strip()
         self.entry_price  = float(entry_price)
         self.shares       = int(shares)
@@ -38,6 +40,10 @@ class RatchetTracker:
         initial_stop_pct  = float(getattr(config, "STOCK_INITIAL_STOP_PCT", -5.0))
         self.stop_price   = round(entry_price * (1 + initial_stop_pct / 100), 4)
         self.level_desc   = f"initial ({initial_stop_pct:+.0f}%)"
+        self.source       = source    # "morning scan" | "@unusual_whales" | "Discord: channel"
+        self.entry_time   = entry_time or _dt.datetime.now(
+            _pytz.timezone(_cfg.TIMEZONE)
+        ).strftime("%H:%M")
 
     # ── Public API ─────────────────────────────────────────
 
