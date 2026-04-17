@@ -239,9 +239,18 @@ def monitor_stock_positions(trackers: dict, daily_pnl: float = 0.0) -> dict:
     news = get_market_news(tickers=list(trackers.keys()), hours_back=1)  # 60 min
 
     positions_summary = []
+    no_quote_tickers = []   # tickers with stale/failed quotes — held automatically
     for ticker, tracker in trackers.items():
         quote = get_stock_quote(ticker)
         price = float(quote.get("mid") or 0)
+
+        if not price:
+            # API/network error returned 0 — never pass 0 to Claude (it always exits on 0).
+            # Treat as "data unavailable" and hold.
+            no_quote_tickers.append(ticker)
+            print(f"   ⚠️  {ticker}: quote = 0 (feed error) — holding, not sending to Claude")
+            continue
+
         # Read P&L without mutating tracker state (update() ratchets the stop)
         pnl_pct = ((price - tracker.entry_price) / tracker.entry_price) if tracker.entry_price else 0
         positions_summary.append({
@@ -250,11 +259,15 @@ def monitor_stock_positions(trackers: dict, daily_pnl: float = 0.0) -> dict:
             "entry":        tracker.entry_price,
             "current":      price,
             "pnl_pct":      round(pnl_pct, 4),
-            "pnl_dollar":   round((price - tracker.entry_price) * tracker.shares, 2) if price else 0,
+            "pnl_dollar":   round((price - tracker.entry_price) * tracker.shares, 2),
             "peak":         tracker.peak_price,
             "stop":         tracker.stop_price,
             "stop_level":   tracker.level_desc,
         })
+
+    # If every position has a stale quote, skip Claude and hold everything
+    if not positions_summary:
+        return {t: {"action": "HOLD", "rationale": "no live quotes — data feed error"} for t in trackers}
 
     prompt = POSITION_MONITOR_PROMPT.format(
         time_pst=now_pst,
@@ -286,11 +299,15 @@ def monitor_stock_positions(trackers: dict, daily_pnl: float = 0.0) -> dict:
             if t not in decisions:
                 decisions[t] = {"action": "HOLD", "rationale": "not mentioned — holding"}
 
+        # Auto-HOLD tickers with stale quotes (never shown to Claude)
+        for t in no_quote_tickers:
+            decisions[t] = {"action": "HOLD", "rationale": "quote=0, data feed error — holding"}
+
         return decisions
 
     except Exception as e:
         log_error("monitor_stock_positions", str(e))
-        return {t: {"action": "HOLD", "rationale": f"monitor error: {e}"} for t in trackers}
+        return {t: {"action": "HOLD", "rationale": f"monitor error: {e}"} for t in trackers}  # noqa: E501
 
 
 # ──────────────────────────────────────────────────────────

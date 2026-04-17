@@ -33,6 +33,7 @@ from tools.signal_queue import drain as drain_signals, mark_acted, already_acted
 state = {
     "morning_thesis":         None,
     "trackers":               {},    # ticker → RatchetTracker
+    "closed_today":           set(), # tickers exited this session — no re-entry
     "scan_count":             0,
     "last_claude_call_time":  0,
     "midday_scan_done":       False,  # only one mid-day re-scan per session
@@ -192,6 +193,7 @@ def execute_exit(ticker: str, reason: str) -> bool:
             exit_fill = float(get_stock_quote(ticker).get("mid") or 0)
 
     state["trackers"].pop(ticker, None)
+    state["closed_today"].add(ticker)   # no same-day re-entry
 
     pnl = (exit_fill - tracker.entry_price) * tracker.shares if exit_fill else 0.0
     risk_manager.record_trade(pnl)
@@ -270,6 +272,20 @@ def process_analyst_signals():
             else f"Twitter: @{src_label}"
         )
 
+        # ── MACRO PUT: QQQ/SPY put = risk-off, exit all longs ──
+        if signal_type == "macro_put":
+            if state["trackers"]:
+                print(
+                    f"\n  🚨 MACRO PUT signal  {ticker} from {src_display} (conf {sig['confidence']:.0%})"
+                    f"\n     \"{sig['raw_text'][:100]}\""
+                    f"\n     Risk-off: closing all {len(state['trackers'])} open positions"
+                )
+                for held_ticker in list(state["trackers"].keys()):
+                    execute_exit(held_ticker, f"macro risk-off: {ticker} PUT from {src_display}")
+            else:
+                print(f"   📣 Macro PUT {ticker} from {src_display} — no open positions to close")
+            continue
+
         # ── PUT signal: sell the stock if we're holding it ──────
         if signal_type == "put":
             if ticker in state["trackers"]:
@@ -284,6 +300,9 @@ def process_analyst_signals():
         if ticker in state["trackers"]:
             mark_acted(ticker)
             continue  # already holding — no noise
+
+        if ticker in state["closed_today"]:
+            continue  # closed this session — no same-day re-entry (silent)
 
         if already_acted(ticker):
             continue  # already evaluated today — silent skip
@@ -394,6 +413,7 @@ def run():
     # ── Reset daily state ─────────────────────────────────
     reset_daily()
     state["force_exit_done"] = False
+    state["closed_today"]    = set()
 
     # ── Live mode: reconcile any positions already open in Alpaca ──
     # If the bot crashed and restarted mid-session it could have open
@@ -531,6 +551,8 @@ def run():
                         ticker = (stock.get("ticker") or "").upper().strip()
                         if not ticker or ticker in state["trackers"]:
                             continue
+                        if ticker in state["closed_today"]:
+                            continue  # already closed this session — no re-entry
                         if len(state["trackers"]) >= config.STOCK_MAX_POSITIONS:
                             break
                         decision = get_entry_decision(

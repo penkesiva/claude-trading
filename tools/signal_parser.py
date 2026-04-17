@@ -30,6 +30,10 @@ from prompts.stock_system_prompt import STOCK_UNIVERSE
 # Convert to set for O(1) lookups
 _UNIVERSE_SET = set(STOCK_UNIVERSE)
 
+# Macro-index tickers — not traded directly but a PUT signal on these means
+# "risk-off across the board" → close all open tech longs.
+_MACRO_TICKERS = {"QQQ", "SPY", "IWM", "SQQQ", "SPXU", "TQQQ"}
+
 # Bullish keywords → signal_type = "call"
 _CALL_KEYWORDS = re.compile(
     r'\bcalls?\b|\blong\b|\bbuying\b|\bbuy\b|\bbullish\b|\bbreakout\b|\bbreaking\s+out\b',
@@ -107,9 +111,28 @@ def parse_signal(article: dict) -> Optional[dict]:
     author_match = re.match(r'^\[([^\]]+)\]\s*', text)
     source_label = author_match.group(1) if author_match else source
 
-    # Find all ticker candidates in the universe
+    # Find all ticker candidates in the text
     raw_tokens = _TICKER_PATTERN.findall(text)
-    candidates = [t for group in raw_tokens for t in group if t and t in _UNIVERSE_SET]
+    all_tokens = [t for group in raw_tokens for t in group if t]
+
+    # Check for macro index signals first (QQQ/SPY PUT = portfolio risk-off)
+    macro_hits = [t for t in all_tokens if t in _MACRO_TICKERS]
+    if macro_hits:
+        has_put_kw   = bool(_PUT_KEYWORDS.search(text))
+        has_bear_emo = _has_bearish_emoji(text)
+        if has_put_kw or has_bear_emo:
+            primary = max(set(macro_hits), key=macro_hits.count)
+            return {
+                "ticker":       primary,
+                "signal_type":  "macro_put",
+                "raw_text":     text[:300],
+                "source":       source,
+                "source_label": source_label,
+                "confidence":   0.80,
+                "published_at": ts,
+            }
+
+    candidates = [t for t in all_tokens if t in _UNIVERSE_SET]
     if not candidates:
         return None
 

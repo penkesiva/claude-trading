@@ -64,6 +64,8 @@ HARD RULES
 - Confidence < 60% → output SKIP, never ENTER.
 - Do not chase stocks already up > 3% without fresh catalyst.
 - If you cannot find a clear catalyst today, output SKIP.
+- COIN requires a crypto-specific catalyst (e.g., Bitcoin surge, crypto regulation news,
+  exchange volume spike). General macro risk-on sentiment is NOT sufficient to enter COIN.
 - All responses must be valid JSON objects only.
   Start your JSON with {{ and end with }}. No prose before or after.
 """
