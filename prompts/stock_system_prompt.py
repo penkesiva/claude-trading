@@ -29,6 +29,8 @@ STOCK_UNIVERSE = [
     "DIS", "NFLX", "SPOT",
     # Mobility / Tech
     "UBER", "COIN",
+    # Networking / Infrastructure
+    "ANET", "ROKU", "TTD", "RBLX", "U",
 ]
 STOCK_UNIVERSE = list(dict.fromkeys(STOCK_UNIVERSE))  # deduplicate, preserve order
 
@@ -105,11 +107,11 @@ Current time: {time_pst} PST
 Ticker: {ticker}
 Morning bias: {bias}
 Market context: {market_summary}
-
+{analyst_signal_block}
 Current quote:
 {price_data}
 
-Recent 5-min bars (newest last):
+Recent 5-min bars (today's session):
 {bars_summary}
 
 Recent news for {ticker}:

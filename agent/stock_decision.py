@@ -102,12 +102,18 @@ def get_entry_decision(
     morning_thesis: dict,
     daily_pnl: float = 0.0,
     open_position_count: int = 0,
+    analyst_signal: dict = None,   # populated when triggered by Discord/Twitter call signal
 ) -> dict:
     """
     Ask Claude whether to enter a position in `ticker` right now.
     Returns dict with at least {"action": "ENTER"|"SKIP", "ticker": ..., "shares": ...}.
+
+    analyst_signal (optional): dict from signal_parser with keys:
+        ticker, signal_type, raw_text, source, source_label, confidence, published_at
+    When present, Claude sees the raw analyst quote and the source as an extra bullish signal.
     """
-    print(f"   🔍 Entry check: {ticker}...")
+    trigger = "analyst signal" if analyst_signal else "watchlist scan"
+    print(f"   🔍 Entry check: {ticker} [{trigger}]...")
 
     quote = get_stock_quote(ticker)
     price = float(quote.get("mid") or quote.get("ask") or 0)
@@ -133,11 +139,24 @@ def get_entry_decision(
     avail_cash  = max(0, config.STOCK_MAX_PORTFOLIO - open_position_count * config.STOCK_BASE_ALLOCATION)
     order_cost  = shares * price
 
+    # Build analyst signal block for prompt (empty string if no signal)
+    if analyst_signal:
+        sig_block = (
+            f"\nANALYST SIGNAL (from {analyst_signal.get('source_label', analyst_signal.get('source'))}):\n"
+            f"  \"{analyst_signal.get('raw_text', '')[:200]}\"\n"
+            f"  Signal confidence: {analyst_signal.get('confidence', 0):.0%}\n"
+            f"  This analyst is calling {ticker} calls — treat as a directional bullish trigger.\n"
+            f"  We trade the underlying STOCK, not the option.\n"
+        )
+    else:
+        sig_block = ""
+
     prompt = ENTRY_DECISION_PROMPT.format(
         time_pst=now_pst,
         ticker=ticker,
         bias=bias,
         market_summary=market_sum,
+        analyst_signal_block=sig_block,
         price_data=json.dumps({"bid": quote.get("bid"), "ask": quote.get("ask"), "mid": price}, indent=2),
         bars_summary=_format_bars(bars),
         news_context=format_news_for_prompt(news, max_articles=6),
@@ -296,9 +315,11 @@ def _extract_json(text: str) -> dict:
 
 def _format_bars(bars: list) -> str:
     if not bars:
-        return "(no bar data)"
-    lines = []
-    for b in bars[-10:]:
+        return "(no bar data — market may not have opened yet)"
+    # bars come back newest-first (sort=desc from API); show most recent 10
+    recent = bars[:10]
+    lines = [f"5-min bars (today's session, {len(bars)} total, newest first):"]
+    for b in recent:
         lines.append(
             f"  {b['t'][:16]}: O={b['o']:.2f} H={b['h']:.2f} "
             f"L={b['l']:.2f} C={b['c']:.2f} V={b['v']:,}"

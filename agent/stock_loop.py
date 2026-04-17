@@ -28,6 +28,7 @@ from tools.alpaca_stock_tools import (
     get_stock_quote,
 )
 from tools.logger import log_trade, log_error, log_pnl
+from tools.signal_queue import drain as drain_signals, mark_acted, already_acted, reset_daily
 
 # ── Shared state ───────────────────────────────────────────
 state = {
@@ -35,10 +36,12 @@ state = {
     "trackers":               {},    # ticker → RatchetTracker
     "scan_count":             0,
     "last_claude_call_time":  0,
+    "midday_scan_done":       False,  # only one mid-day re-scan per session
 }
 risk_manager = StockRiskManager()
 
 CLAUDE_CALL_INTERVAL = 300   # 5 min between Claude calls
+MIDDAY_SCAN_TIME     = "10:00"  # PST — refresh watchlist once mid-morning
 
 
 # ──────────────────────────────────────────────────────────
@@ -88,8 +91,8 @@ def execute_entry(ticker: str, decision: dict) -> bool:
         return False
 
     confidence = float(decision.get("confidence") or 0)
-    if confidence < 0.55:
-        print(f"⏭️  {ticker}: confidence {confidence:.0%} < 55% — skipping")
+    if confidence < 0.60:
+        print(f"⏭️  {ticker}: confidence {confidence:.0%} < 60% — skipping")
         return False
 
     print(f"📤 BUY {shares}sh {ticker} @ ~${price:.2f}  (${order_cost:.0f})")
@@ -173,6 +176,102 @@ def execute_exit(ticker: str, reason: str) -> bool:
 
 
 # ──────────────────────────────────────────────────────────
+# ANALYST SIGNAL PROCESSING (every scan, ~60s)
+# Drains Discord/Twitter call signals and fast-paths them to Claude
+# ──────────────────────────────────────────────────────────
+
+def process_analyst_signals():
+    """
+    Drain the signal queue, evaluate each new call signal via Claude, and
+    enter the underlying stock if confirmed.  Runs every 60s alongside the
+    ratchet check — much faster than the 5-min Claude cycle.
+    """
+    signals = drain_signals()
+    if not signals:
+        return
+
+    now = _pst_now()
+    if now >= config.STOCK_NO_NEW_TRADES_TIME:
+        print(f"   ⏭️  Signal queue: {len(signals)} signal(s) skipped — past no-new-trades time")
+        return
+
+    can_trade, reason = risk_manager.can_trade(open_positions=len(state["trackers"]))
+    if not can_trade:
+        print(f"   ⏭️  Signal queue: {len(signals)} signal(s) skipped — {reason}")
+        return
+
+    thesis = state.get("morning_thesis") or {}
+
+    for sig in signals:
+        ticker      = sig["ticker"]
+        signal_type = sig.get("signal_type", "call")
+
+        print(
+            f"\n   📣 ANALYST SIGNAL → {ticker} [{signal_type.upper()}] | "
+            f"from [{sig['source_label']}] | conf {sig['confidence']:.0%}"
+        )
+        print(f"      \"{sig['raw_text'][:120]}\"")
+
+        # ── PUT signal: sell the stock if we're holding it ──────
+        if signal_type == "put":
+            if ticker in state["trackers"]:
+                execute_exit(
+                    ticker,
+                    f"analyst PUT signal from [{sig['source_label']}]: "
+                    f"{sig['raw_text'][:60]}",
+                )
+            else:
+                print(f"   ⏭️  PUT signal {ticker}: not in portfolio — nothing to sell")
+            # Don't mark_acted for puts — a subsequent call signal should still be evaluated
+            continue
+
+        # ── CALL signal: evaluate entry ─────────────────────────
+
+        # Skip if already holding this ticker
+        if ticker in state["trackers"]:
+            print(f"   ⏭️  CALL signal {ticker}: already in portfolio — skip")
+            mark_acted(ticker)
+            continue
+
+        # Skip if already acted on this ticker's signal today
+        if already_acted(ticker):
+            print(f"   ⏭️  CALL signal {ticker}: already evaluated today — skip")
+            continue
+
+        mark_acted(ticker)
+
+        # Re-check capacity before each entry attempt
+        can_trade, reason = risk_manager.can_trade(open_positions=len(state["trackers"]))
+        if not can_trade:
+            print(f"   ⏭️  CALL signal {ticker}: {reason}")
+            break
+
+        # Find or construct a bias from the morning watchlist
+        watchlist_entry = next(
+            (s for s in thesis.get("watchlist", []) if s.get("ticker") == ticker),
+            None,
+        )
+        bias = watchlist_entry.get("bias", "bullish") if watchlist_entry else "bullish"
+
+        decision = get_entry_decision(
+            ticker=ticker,
+            bias=bias,
+            morning_thesis=thesis,
+            daily_pnl=risk_manager.daily_pnl,
+            open_position_count=len(state["trackers"]),
+            analyst_signal=sig,
+        )
+
+        if decision.get("action") == "ENTER":
+            execute_entry(ticker, decision)
+        else:
+            print(
+                f"   ⏭️  Claude skipped CALL signal {ticker}: "
+                f"{decision.get('entry_rationale', '')[:80]}"
+            )
+
+
+# ──────────────────────────────────────────────────────────
 # RATCHET CHECK (every scan, ~60s, no Claude)
 # ──────────────────────────────────────────────────────────
 
@@ -212,6 +311,23 @@ def run():
     print(f"   Initial stop:   {config.STOCK_INITIAL_STOP_PCT:+.0f}%  (ratchets up)")
     print(f"   Force exit:     {config.STOCK_FORCE_EXIT_TIME} PST")
     print("=" * 60 + "\n")
+
+    # ── Start background signal threads ────────────────────
+    # Both are no-ops if their credentials are not set in .env
+    try:
+        from tools.twitter_tools import start_twitter_stream
+        start_twitter_stream()
+    except Exception as e:
+        print(f"   ⚠️  Twitter stream init failed: {e}")
+
+    try:
+        from tools.discord_tools import start_discord_poller
+        start_discord_poller()
+    except Exception as e:
+        print(f"   ⚠️  Discord poller init failed: {e}")
+
+    # ── Reset daily signal state ───────────────────────────
+    reset_daily()
 
     # ── Wait for market open ───────────────────────────────
     while True:
@@ -255,8 +371,46 @@ def run():
             _time.sleep(300)
             continue
 
+        # ── Analyst signal processing (every 60s) ─────────
+        # Drains Discord/Twitter call signals; fast-paths to Claude entry check
+        process_analyst_signals()
+
         # ── Ratchet check (every 60s, free) ───────────────
         run_ratchet_check()
+
+        # ── Mid-morning re-scan (once, ~10:00 PST) ────────────
+        # Refreshes the watchlist with any new catalysts that broke after open.
+        if (
+            not state["midday_scan_done"]
+            and now >= MIDDAY_SCAN_TIME
+            and now < config.STOCK_NO_NEW_TRADES_TIME
+            and not risk_manager.halted
+        ):
+            print(f"\n🔄 Mid-morning re-scan ({now} PST) — refreshing watchlist…")
+            fresh = run_morning_scan()
+            if fresh and fresh.get("watchlist"):
+                # Merge: keep tickers already on watchlist, append new ones
+                existing_tickers = {
+                    s["ticker"] for s in state["morning_thesis"].get("watchlist", [])
+                }
+                new_picks = [
+                    s for s in fresh["watchlist"]
+                    if s.get("ticker") not in existing_tickers
+                ]
+                state["morning_thesis"]["watchlist"].extend(new_picks)
+                # Update market-level context
+                state["morning_thesis"]["market_summary"] = fresh.get(
+                    "market_summary", state["morning_thesis"].get("market_summary", "")
+                )
+                state["morning_thesis"]["market_bias"] = fresh.get(
+                    "market_bias", state["morning_thesis"].get("market_bias", "mixed")
+                )
+                added = [s["ticker"] for s in new_picks]
+                print(
+                    f"   ✅ Re-scan complete. "
+                    f"New tickers added: {added if added else 'none (all already on list)'}"
+                )
+            state["midday_scan_done"] = True
 
         # ── Claude calls (every 5 min) ─────────────────────
         now_ts = _time.time()

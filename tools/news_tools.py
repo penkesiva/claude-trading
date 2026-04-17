@@ -114,24 +114,43 @@ def get_market_news(
     hours_back: int = 12,
 ) -> list:
     """
-    Combined, deduplicated news from Alpaca + NewsAPI.
-    Alpaca is used for ticker-specific articles; NewsAPI adds broad tech/macro coverage.
+    Combined, deduplicated news from Alpaca + NewsAPI + Twitter + Discord.
+    - Alpaca: ticker-linked financial news
+    - NewsAPI: broad tech/macro headlines (optional, needs NEWSAPI_KEY)
+    - Twitter: real-time tweets from configured accounts (optional, needs TWITTER_BEARER_TOKEN)
+    - Discord: channel messages from configured servers (optional, needs DISCORD_TOKEN)
     """
-    alpaca  = fetch_alpaca_news(symbols=tickers, hours_back=hours_back, limit=30)
+    alpaca = fetch_alpaca_news(symbols=tickers, hours_back=hours_back, limit=30)
 
-    # Broad tech/macro headlines for morning scan context
     tech_query = "technology earnings government defense semiconductor AI"
     newsapi = fetch_newsapi_tech(query=tech_query, limit=15)
 
+    # Twitter — import lazily so missing credentials don't break anything
+    twitter: list = []
+    try:
+        from tools.twitter_tools import get_recent_tweets
+        twitter = get_recent_tweets(hours_back=hours_back)
+    except Exception:
+        pass
+
+    # Discord — same lazy import pattern
+    discord: list = []
+    try:
+        from tools.discord_tools import get_recent_discord_signals
+        discord = get_recent_discord_signals(hours_back=hours_back)
+    except Exception:
+        pass
+
     seen: set = set()
     combined: list = []
-    for article in alpaca + newsapi:
+    # Priority order: real-time social first, then financial news, then broad macro
+    for article in twitter + discord + alpaca + newsapi:
         key = (article.get("headline") or "")[:80].lower().strip()
         if key and key not in seen:
             seen.add(key)
             combined.append(article)
 
-    return combined[:40]
+    return combined[:50]
 
 
 def format_news_for_prompt(articles: list, max_articles: int = 20) -> str:

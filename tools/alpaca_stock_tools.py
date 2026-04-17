@@ -48,14 +48,36 @@ def get_stock_quote(ticker: str) -> dict:
 
 
 def get_stock_bars(ticker: str, timeframe: str = "5Min", limit: int = 20) -> list:
-    """Recent OHLCV bars for a stock. Tries sip feed then iex."""
+    """Recent OHLCV bars for a stock anchored to today's regular session (9:30 ET).
+
+    Passing `start` ensures we only get bars from today's regular session and
+    never receive stale pre-market bars from a prior session.
+    """
+    import datetime, pytz
+
     sym = ticker.upper().strip()
+
+    # Anchor to today's market open in ET so we never get yesterday's bars.
+    et = pytz.timezone("America/New_York")
+    now_et = datetime.datetime.now(et)
+    market_open_et = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    # If called before 9:30 ET (pre-market), still use today's date so we get
+    # whatever has printed so far; Alpaca will just return an empty list or the
+    # most recent bars, which is fine.
+    start_iso = market_open_et.isoformat()  # includes correct UTC offset (EDT -04:00 / EST -05:00)
+
     for feed in ["sip", "iex"]:
         try:
             r = requests.get(
                 f"{DATA_URL}/v2/stocks/{sym}/bars",
                 headers=_headers(),
-                params={"timeframe": timeframe, "limit": limit, "feed": feed},
+                params={
+                    "timeframe": timeframe,
+                    "limit": limit,
+                    "feed": feed,
+                    "start": start_iso,
+                    "sort": "desc",          # newest first so [0] is the most recent bar
+                },
                 timeout=8,
             )
             r.raise_for_status()

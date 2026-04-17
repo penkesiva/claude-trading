@@ -71,6 +71,26 @@ DRY_RUN        = os.getenv("DRY_RUN", "false").lower() == "true"
 # ── News APIs ──────────────────────────────────────────────
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")      # optional: newsapi.org key
 
+# ── Twitter/X Filtered Stream ──────────────────────────────
+TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
+TWITTER_ACCOUNTS     = [
+    a.strip().lstrip("@")
+    for a in os.getenv("TWITTER_ACCOUNTS", "").split(",")
+    if a.strip()
+]
+
+# ── Discord channel polling ────────────────────────────────
+# Auth option A: pre-set user/bot token
+DISCORD_TOKEN       = os.getenv("DISCORD_TOKEN", "")
+# Auth option B: email + password (module logs in at startup to get a token)
+DISCORD_EMAIL       = os.getenv("DISCORD_EMAIL", "")
+DISCORD_PASSWORD    = os.getenv("DISCORD_PASSWORD", "")
+DISCORD_CHANNEL_IDS = [
+    c.strip()
+    for c in os.getenv("DISCORD_CHANNEL_IDS", "").split(",")
+    if c.strip()
+]
+
 # ── Stock Day-Trading Config (stock-only branch) ───────────
 STOCK_MAX_PORTFOLIO      = float(os.getenv("STOCK_MAX_PORTFOLIO",      10_000))
 STOCK_BASE_ALLOCATION    = float(os.getenv("STOCK_BASE_ALLOCATION",     2_000))
