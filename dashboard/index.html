@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Claude Stock Trader — Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:    #0d1117;
+      --card:  #161b22;
+      --border:#30363d;
+      --text:  #e6edf3;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --red:   #f85149;
+      --blue:  #58a6ff;
+      --gold:  #d29922;
+    }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+    h1   { font-size: 1.4rem; font-weight: 600; }
+    h2   { font-size: 1rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: .75rem; }
+    a    { color: var(--blue); }
+
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1rem 1.5rem; border-bottom: 1px solid var(--border);
+      background: var(--card);
+    }
+    header .subtitle { color: var(--muted); font-size: .85rem; margin-top: .2rem; }
+    #refresh-btn {
+      padding: .4rem .9rem; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--text); cursor: pointer; font-size: .85rem;
+    }
+    #refresh-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+    main { padding: 1.25rem 1.5rem; max-width: 1400px; margin: 0 auto; }
+
+    /* KPI cards row */
+    .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem; margin-bottom: 1.25rem; }
+    .kpi {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; padding: .9rem 1rem;
+    }
+    .kpi .label { font-size: .78rem; color: var(--muted); margin-bottom: .25rem; }
+    .kpi .value { font-size: 1.5rem; font-weight: 700; }
+    .kpi .value.pos { color: var(--green); }
+    .kpi .value.neg { color: var(--red); }
+    .kpi .value.neu { color: var(--text); }
+    .kpi .sub { font-size: .75rem; color: var(--muted); margin-top: .15rem; }
+
+    /* Two-column layout */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+    @media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1rem 1.1rem;
+    }
+
+    canvas { max-height: 260px; }
+
+    /* Ticker table */
+    table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    th { text-align: left; padding: .45rem .6rem; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+    td { padding: .45rem .6rem; border-bottom: 1px solid var(--border); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.03); }
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+    .tag {
+      display: inline-block; padding: .1rem .45rem; border-radius: 4px;
+      font-size: .72rem; font-weight: 600;
+    }
+    .tag-discord { background:#5865f2; color:#fff; }
+    .tag-twitter { background:#1d9bf0; color:#fff; }
+    .tag-scan    { background:#30363d; color:var(--muted); }
+    .tag-macro   { background:#6e40c9; color:#fff; }
+
+    /* Trade log */
+    .trade-log { max-height: 340px; overflow-y: auto; font-size: .8rem; }
+    .trade-log table { font-size: .79rem; }
+
+    #empty-state {
+      text-align: center; padding: 4rem 0; color: var(--muted);
+    }
+    #empty-state p { margin-top: .5rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>📈 Claude Stock Trader</h1>
+    <div class="subtitle" id="data-info">Loading trades.csv…</div>
+  </div>
+  <button id="refresh-btn" onclick="loadData()">↻ Refresh</button>
+</header>
+
+<main id="main-content">
+  <div id="empty-state">
+    <div style="font-size:2rem">📂</div>
+    <p>No trade data found.</p>
+    <p>Run the bot first — trades appear in <code>logs/trades.csv</code></p>
+  </div>
+</main>
+
+<script>
+// ─── CSV parser ────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(',').map(h => h.trim());
+  return lines.slice(1).map(line => {
+    const vals = line.split(',');
+    const obj = {};
+    headers.forEach((h, i) => obj[h] = (vals[i] || '').trim());
+    obj.pnl     = parseFloat(obj.pnl)     || 0;
+    obj.pnl_pct = parseFloat(obj.pnl_pct) || 0;
+    obj.shares  = parseInt(obj.shares)    || 0;
+    obj.entry_price = parseFloat(obj.entry_price) || 0;
+    obj.exit_price  = parseFloat(obj.exit_price)  || 0;
+    return obj;
+  });
+}
+
+// ─── Stats helpers ─────────────────────────────────────────
+function fmt$(v) { return (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(2); }
+function fmtPct(v) { return (v >= 0 ? '+' : '') + v.toFixed(1) + '%'; }
+function avg(arr) { return arr.length ? arr.reduce((a,b) => a+b, 0)/arr.length : 0; }
+function sum(arr) { return arr.reduce((a,b) => a+b, 0); }
+function colorFor(v) { return v >= 0 ? '#3fb950' : '#f85149'; }
+function sourceTag(src) {
+  if (!src) return '';
+  const s = src.toLowerCase();
+  if (s.includes('discord'))      return `<span class="tag tag-discord">Discord</span>`;
+  if (s.includes('twitter') || s.includes('@')) return `<span class="tag tag-twitter">Twitter</span>`;
+  if (s.includes('macro'))        return `<span class="tag tag-macro">Macro</span>`;
+  return `<span class="tag tag-scan">Scan</span>`;
+}
+
+let _charts = {};
+function destroyChart(id) { if (_charts[id]) { _charts[id].destroy(); delete _charts[id]; } }
+
+// ─── Main render ───────────────────────────────────────────
+function render(trades) {
+  const wins   = trades.filter(t => t.pnl > 0);
+  const losses = trades.filter(t => t.pnl <= 0);
+  const totalPnl   = sum(trades.map(t => t.pnl));
+  const grossWin   = sum(wins.map(t => t.pnl));
+  const grossLoss  = Math.abs(sum(losses.map(t => t.pnl)));
+  const winRate    = trades.length ? (wins.length / trades.length * 100) : 0;
+  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : 0;
+  const avgWin     = avg(wins.map(t => t.pnl));
+  const avgLoss    = avg(losses.map(t => t.pnl));
+
+  // Daily P&L grouped
+  const byDate = {};
+  trades.forEach(t => {
+    byDate[t.date] = (byDate[t.date] || 0) + t.pnl;
+  });
+  const dates = Object.keys(byDate).sort();
+  const dailyPnls = dates.map(d => +byDate[d].toFixed(2));
+
+  // By ticker
+  const byTicker = {};
+  trades.forEach(t => {
+    if (!byTicker[t.ticker]) byTicker[t.ticker] = { trades: 0, wins: 0, pnl: 0, held: [] };
+    byTicker[t.ticker].trades++;
+    if (t.pnl > 0) byTicker[t.ticker].wins++;
+    byTicker[t.ticker].pnl += t.pnl;
+  });
+
+  // By source
+  const bySrc = {};
+  trades.forEach(t => {
+    const s = t.source ? t.source.split(':')[0].trim().toLowerCase() : 'morning scan';
+    if (!bySrc[s]) bySrc[s] = { trades: 0, pnl: 0 };
+    bySrc[s].trades++;
+    bySrc[s].pnl += t.pnl;
+  });
+
+  // Exit reasons
+  const byReason = {};
+  trades.forEach(t => {
+    const r = t.reason || 'unknown';
+    const key = r.includes('trail') ? 'Trail stop'
+              : r.includes('force') ? 'Force exit'
+              : r.includes('macro') ? 'Macro risk-off'
+              : r.includes('Claude') || r.includes('claude') ? 'Claude exit'
+              : r.includes('halt') ? 'Halt'
+              : 'Other';
+    byReason[key] = (byReason[key] || 0) + 1;
+  });
+
+  // Best / worst day
+  const bestDay  = dates.reduce((b, d) => byDate[d] > (byDate[b] || -Infinity) ? d : b, dates[0]);
+  const worstDay = dates.reduce((b, d) => byDate[d] < (byDate[b] || Infinity)  ? d : b, dates[0]);
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <!-- KPIs -->
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="label">Total P&amp;L</div>
+        <div class="value ${totalPnl >= 0 ? 'pos':'neg'}">${fmt$(totalPnl)}</div>
+        <div class="sub">${trades.length} closed trades</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Win Rate</div>
+        <div class="value ${winRate >= 50 ? 'pos':'neg'}">${winRate.toFixed(0)}%</div>
+        <div class="sub">${wins.length}W / ${losses.length}L</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Profit Factor</div>
+        <div class="value ${profitFactor >= 1 ? 'pos':'neg'}">${isFinite(profitFactor) ? profitFactor.toFixed(2) : '∞'}</div>
+        <div class="sub">Gross win / gross loss</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Avg Winner</div>
+        <div class="value pos">${fmt$(avgWin)}</div>
+        <div class="sub">per trade</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Avg Loser</div>
+        <div class="value neg">${fmt$(avgLoss)}</div>
+        <div class="sub">per trade</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Best Day</div>
+        <div class="value ${bestDay && byDate[bestDay] >= 0 ? 'pos':'neg'}">${bestDay ? fmt$(byDate[bestDay]) : '—'}</div>
+        <div class="sub">${bestDay || ''}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Worst Day</div>
+        <div class="value neg">${worstDay ? fmt$(byDate[worstDay]) : '—'}</div>
+        <div class="sub">${worstDay || ''}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Trading Days</div>
+        <div class="value neu">${dates.length}</div>
+        <div class="sub">${dates[0] || ''} → ${dates[dates.length-1] || ''}</div>
+      </div>
+    </div>
+
+    <!-- Charts row 1 -->
+    <div class="grid-2">
+      <div class="card">
+        <h2>Daily P&amp;L</h2>
+        <canvas id="chart-daily"></canvas>
+      </div>
+      <div class="card">
+        <h2>Cumulative P&amp;L</h2>
+        <canvas id="chart-cumulative"></canvas>
+      </div>
+    </div>
+
+    <!-- Charts row 2 -->
+    <div class="grid-3">
+      <div class="card">
+        <h2>Exit Reasons</h2>
+        <canvas id="chart-reasons"></canvas>
+      </div>
+      <div class="card">
+        <h2>Signal Source P&amp;L</h2>
+        <canvas id="chart-source"></canvas>
+      </div>
+      <div class="card">
+        <h2>Win / Loss Distribution</h2>
+        <canvas id="chart-dist"></canvas>
+      </div>
+    </div>
+
+    <!-- Ticker breakdown -->
+    <div class="card" style="margin-bottom:1rem">
+      <h2>Per-Ticker Performance</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Ticker</th><th>Trades</th><th>Win%</th>
+            <th>Avg P&amp;L</th><th>Total P&amp;L</th>
+          </tr>
+        </thead>
+        <tbody id="ticker-table"></tbody>
+      </table>
+    </div>
+
+    <!-- Trade log -->
+    <div class="card">
+      <h2>Trade Log</h2>
+      <div class="trade-log">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th><th>Ticker</th><th>Entry</th><th>Exit</th>
+              <th>Shares</th><th>P&amp;L</th><th>P&amp;L%</th><th>Reason</th><th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="trade-log-table"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // ── Daily P&L bar chart ──
+  destroyChart('daily');
+  _charts['daily'] = new Chart(document.getElementById('chart-daily'), {
+    type: 'bar',
+    data: {
+      labels: dates,
+      datasets: [{
+        label: 'Daily P&L ($)',
+        data: dailyPnls,
+        backgroundColor: dailyPnls.map(v => v >= 0 ? 'rgba(63,185,80,.7)' : 'rgba(248,81,73,.7)'),
+        borderRadius: 4,
+      }]
+    },
+    options: chartOpts('$')
+  });
+
+  // ── Cumulative P&L line ──
+  let cum = 0;
+  const cumPnls = dailyPnls.map(v => +(cum += v).toFixed(2));
+  destroyChart('cumulative');
+  _charts['cumulative'] = new Chart(document.getElementById('chart-cumulative'), {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: [{
+        label: 'Cumulative P&L ($)',
+        data: cumPnls,
+        borderColor: cumPnls[cumPnls.length-1] >= 0 ? '#3fb950' : '#f85149',
+        backgroundColor: 'rgba(88,166,255,.08)',
+        fill: true, tension: 0.35, pointRadius: 4,
+      }]
+    },
+    options: chartOpts('$')
+  });
+
+  // ── Exit reasons pie ──
+  const reasonKeys = Object.keys(byReason);
+  const reasonColors = ['#58a6ff','#3fb950','#d29922','#f85149','#8b949e','#bc8cff'];
+  destroyChart('reasons');
+  _charts['reasons'] = new Chart(document.getElementById('chart-reasons'), {
+    type: 'doughnut',
+    data: {
+      labels: reasonKeys,
+      datasets: [{ data: reasonKeys.map(k => byReason[k]), backgroundColor: reasonColors }]
+    },
+    options: pieOpts()
+  });
+
+  // ── Source P&L bar ──
+  const srcKeys = Object.keys(bySrc);
+  destroyChart('source');
+  _charts['source'] = new Chart(document.getElementById('chart-source'), {
+    type: 'bar',
+    data: {
+      labels: srcKeys,
+      datasets: [
+        {
+          label: 'P&L ($)',
+          data: srcKeys.map(k => +bySrc[k].pnl.toFixed(2)),
+          backgroundColor: srcKeys.map(k => bySrc[k].pnl >= 0 ? 'rgba(63,185,80,.7)' : 'rgba(248,81,73,.7)'),
+          borderRadius: 4,
+          yAxisID: 'y',
+        },
+        {
+          label: 'Trades',
+          data: srcKeys.map(k => bySrc[k].trades),
+          type: 'line',
+          borderColor: '#58a6ff',
+          backgroundColor: 'transparent',
+          pointRadius: 5,
+          yAxisID: 'y2',
+        }
+      ]
+    },
+    options: {
+      ...chartOpts('$'),
+      scales: {
+        x: darkScale(),
+        y:  { ...darkScale(), position: 'left',  title: { display: true, text: 'P&L ($)', color: '#8b949e' } },
+        y2: { ...darkScale(), position: 'right', title: { display: true, text: 'Trades',  color: '#58a6ff' }, grid: { drawOnChartArea: false } },
+      }
+    }
+  });
+
+  // ── Win/loss histogram ──
+  const pnlBuckets = {};
+  trades.forEach(t => {
+    const bucket = Math.floor(t.pnl / 5) * 5;
+    pnlBuckets[bucket] = (pnlBuckets[bucket] || 0) + 1;
+  });
+  const bucketKeys = Object.keys(pnlBuckets).map(Number).sort((a,b)=>a-b);
+  destroyChart('dist');
+  _charts['dist'] = new Chart(document.getElementById('chart-dist'), {
+    type: 'bar',
+    data: {
+      labels: bucketKeys.map(k => `$${k}–${k+5}`),
+      datasets: [{
+        label: 'Trades',
+        data: bucketKeys.map(k => pnlBuckets[k]),
+        backgroundColor: bucketKeys.map(k => k >= 0 ? 'rgba(63,185,80,.7)' : 'rgba(248,81,73,.7)'),
+        borderRadius: 3,
+      }]
+    },
+    options: chartOpts(null)
+  });
+
+  // ── Ticker table ──
+  const tickerRows = Object.entries(byTicker)
+    .sort(([,a],[,b]) => b.pnl - a.pnl)
+    .map(([ticker, d]) => {
+      const wr  = d.trades ? (d.wins/d.trades*100).toFixed(0) : 0;
+      const ap  = d.trades ? (d.pnl/d.trades).toFixed(2) : 0;
+      const cls = d.pnl >= 0 ? 'pos' : 'neg';
+      return `<tr>
+        <td><strong>${ticker}</strong></td>
+        <td>${d.trades}</td>
+        <td class="${wr >= 50 ? 'pos':'neg'}">${wr}%</td>
+        <td class="${ap >= 0 ? 'pos':'neg'}">${fmt$(+ap)}</td>
+        <td class="${cls}">${fmt$(+d.pnl.toFixed(2))}</td>
+      </tr>`;
+    }).join('');
+  document.getElementById('ticker-table').innerHTML = tickerRows || '<tr><td colspan="5" style="color:var(--muted)">No data</td></tr>';
+
+  // ── Trade log table (newest first) ──
+  const logRows = [...trades].reverse().map(t => {
+    const cls = t.pnl >= 0 ? 'pos' : 'neg';
+    return `<tr>
+      <td>${t.date}</td>
+      <td><strong>${t.ticker}</strong></td>
+      <td>$${t.entry_price.toFixed(2)}</td>
+      <td>$${t.exit_price.toFixed(2)}</td>
+      <td>${t.shares}</td>
+      <td class="${cls}">${fmt$(t.pnl)}</td>
+      <td class="${cls}">${fmtPct(t.pnl_pct)}</td>
+      <td>${t.reason || '—'}</td>
+      <td>${sourceTag(t.source)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('trade-log-table').innerHTML = logRows || '<tr><td colspan="9" style="color:var(--muted)">No trades yet</td></tr>';
+}
+
+// ─── Chart option helpers ───────────────────────────────────
+function darkScale() {
+  return {
+    ticks: { color: '#8b949e' },
+    grid:  { color: 'rgba(255,255,255,.06)' },
+  };
+}
+function chartOpts(unit) {
+  return {
+    responsive: true,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => unit === '$' ? fmt$(ctx.parsed.y) : ctx.parsed.y
+        }
+      }
+    },
+    scales: {
+      x: darkScale(),
+      y: darkScale(),
+    }
+  };
+}
+function pieOpts() {
+  return {
+    responsive: true,
+    plugins: {
+      legend: {
+        position: 'right',
+        labels: { color: '#8b949e', boxWidth: 12, padding: 10 }
+      }
+    }
+  };
+}
+
+// ─── Data loading ──────────────────────────────────────────
+async function loadData() {
+  document.getElementById('data-info').textContent = 'Loading…';
+  try {
+    // Try to load from ../logs/trades.csv relative to this file
+    const resp = await fetch('../logs/trades.csv?' + Date.now());
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const text = await resp.text();
+    const trades = parseCSV(text);
+    if (!trades.length) {
+      document.getElementById('data-info').textContent = 'trades.csv is empty — run the bot first.';
+      return;
+    }
+    const days = [...new Set(trades.map(t => t.date))].length;
+    document.getElementById('data-info').textContent =
+      `${trades.length} trades · ${days} day(s) · last updated ${new Date().toLocaleTimeString()}`;
+    render(trades);
+  } catch (e) {
+    document.getElementById('data-info').textContent =
+      `Could not load trades.csv (${e.message}). Open via generate.py or a local server.`;
+    console.error(e);
+  }
+}
+
+loadData();
+</script>
+</body>
+</html>

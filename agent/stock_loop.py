@@ -26,7 +26,7 @@ from tools.alpaca_stock_tools import (
     get_order_fill,
     get_stock_quote,
 )
-from tools.logger import log_trade, log_error, log_pnl
+from tools.logger import log_trade, log_error, log_pnl, log_event
 from tools.signal_queue import drain as drain_signals, mark_acted, already_acted, reset_daily
 
 # ── Shared state ───────────────────────────────────────────
@@ -154,6 +154,7 @@ def execute_entry(ticker: str, decision: dict, signal_source: str = "morning sca
         "status":      result.get("status"),
         "time":        now_str,
     })
+    # log_event is already written inside log_trade for "buy" side
     return True
 
 
@@ -217,6 +218,7 @@ def execute_exit(ticker: str, reason: str) -> bool:
         "qty":         tracker.shares,
         "fill_price":  exit_fill,
         "entry_price": tracker.entry_price,
+        "entry_time":  tracker.entry_time,
         "pnl":         round(pnl, 2),
         "pnl_pct":     round(pnl_pct, 2),
         "held_mins":   held,
@@ -280,6 +282,9 @@ def process_analyst_signals():
                     f"\n     \"{sig['raw_text'][:100]}\""
                     f"\n     Risk-off: closing all {len(state['trackers'])} open positions"
                 )
+                log_event(
+                    f"MACRO PUT {ticker} from {src_display} — closing {len(state['trackers'])} position(s)"
+                )
                 for held_ticker in list(state["trackers"].keys()):
                     execute_exit(held_ticker, f"macro risk-off: {ticker} PUT from {src_display}")
             else:
@@ -316,6 +321,7 @@ def process_analyst_signals():
 
         print(f"\n  📣 CALL signal  {ticker} from {src_display} (conf {sig['confidence']:.0%})")
         print(f"     \"{sig['raw_text'][:100]}\"")
+        log_event(f"SIGNAL CALL {ticker} from {src_display} (conf {sig['confidence']:.0%}): {sig['raw_text'][:100]}")
 
         watchlist_entry = next(
             (s for s in thesis.get("watchlist", []) if s.get("ticker") == ticker),
@@ -388,6 +394,7 @@ def run():
     if not signal_sources:
         signal_sources.append("morning scan only")
 
+    mode_tag = "PAPER" if config.PAPER_MODE else "LIVE"
     print("\n" + "=" * 60)
     print(f"{'📄 PAPER' if config.PAPER_MODE else '🔴 LIVE'} STOCK DAY TRADER")
     print(f"   Portfolio max:  ${config.STOCK_MAX_PORTFOLIO:,.0f}  |  per position ${config.STOCK_BASE_ALLOCATION:,.0f}")
@@ -395,6 +402,11 @@ def run():
     print(f"   Force exit:     {config.STOCK_FORCE_EXIT_TIME} PST  |  no new trades after {config.STOCK_NO_NEW_TRADES_TIME} PST")
     print(f"   Signal sources: {', '.join(signal_sources)}")
     print("=" * 60 + "\n")
+    log_event(
+        f"SESSION START [{mode_tag}] | portfolio ${config.STOCK_MAX_PORTFOLIO:,.0f} | "
+        f"per-position ${config.STOCK_BASE_ALLOCATION:,.0f} | max {config.STOCK_MAX_POSITIONS} pos | "
+        f"trail {getattr(config, 'STOCK_TRAIL_PCT', 3.0):.1f}% | sources: {', '.join(signal_sources)}"
+    )
 
     # ── Start background signal threads ────────────────────
     # Both are no-ops if their credentials are not set in .env
@@ -448,8 +460,16 @@ def run():
     print(f"\n🔔 Market open! {_pst_now()} PST\n")
 
     # ── Morning scan ───────────────────────────────────────
+    log_event("MORNING SCAN started")
     state["morning_thesis"] = run_morning_scan()
     state["last_claude_call_time"] = _time.time()
+    thesis = state["morning_thesis"] or {}
+    wl_tickers = [s.get("ticker","") for s in thesis.get("watchlist", [])]
+    log_event(
+        f"MORNING SCAN done | bias: {thesis.get('market_bias','?')} | "
+        f"watchlist: {', '.join(wl_tickers) or 'none'} | "
+        f"{thesis.get('market_summary','')[:100]}"
+    )
 
     # ── Main loop ──────────────────────────────────────────
     while True:
@@ -470,6 +490,7 @@ def run():
         if now >= config.STOCK_FORCE_EXIT_TIME and not state.get("force_exit_done"):
             if state["trackers"]:
                 print(f"⏰ Force exit time ({now} PST) — closing all positions")
+                log_event(f"FORCE EXIT {now} PST — closing {len(state['trackers'])} position(s)")
                 for ticker in list(state["trackers"].keys()):
                     execute_exit(ticker, f"force exit at {now} PST")
             state["force_exit_done"] = True
@@ -478,6 +499,7 @@ def run():
         # Daily loss halt
         if risk_manager.halted:
             if state["trackers"]:
+                log_event(f"HALT {risk_manager.halt_reason} — closing {len(state['trackers'])} position(s)")
                 for ticker in list(state["trackers"].keys()):
                     execute_exit(ticker, f"halt: {risk_manager.halt_reason}")
             print(f"🛑 Halted: {risk_manager.halt_reason}")
@@ -500,6 +522,7 @@ def run():
             and not risk_manager.halted
         ):
             print(f"\n🔄 Mid-morning re-scan ({now} PST) — refreshing watchlist…")
+            log_event(f"MID-MORNING RE-SCAN {now} PST")
             fresh = run_morning_scan()
             if fresh and fresh.get("watchlist"):
                 # Merge: keep tickers already on watchlist, append new ones

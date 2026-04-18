@@ -78,6 +78,51 @@ python3 stock_main.py --live
 
 ---
 
+## Logging
+
+Every trading session writes to three places automatically:
+
+| File | Purpose |
+|---|---|
+| `logs/YYYY-MM-DD.log` | Human-readable event log — one line per event (entry, exit, signal, scan, error) |
+| `logs/trades.csv` | One CSV row per completed trade — feeds the dashboard |
+| `logs/trades.json` | Full JSON trade records (for programmatic analysis) |
+| `logs/errors.json` | Error log |
+| `logs/pnl.json` | Daily P&L history |
+
+Sample event log line:
+```
+[07:15:33] ENTRY ✅ NVDA   | 8sh @ $875.40 | conf 72% | source: morning scan
+[09:10:12] EXIT  ✅ NVDA   | entry $875.40 → exit $882.10 | P&L +$53.60 (+0.77%) | held 114m | trail stop
+[09:10:12] END OF DAY 🟢 | P&L +$53.60 | trades 2
+```
+
+---
+
+## Dashboard
+
+### Terminal summary (after market close)
+```bash
+python3 dashboard/generate.py --summary
+```
+
+### Browser dashboard (interactive charts)
+```bash
+python3 dashboard/generate.py --serve    # starts local server + opens browser
+```
+
+Dashboard panels:
+- **KPI bar** — Total P&L, win rate, profit factor, avg winner/loser, best/worst day
+- **Daily P&L bar chart** — green/red bars per trading day
+- **Cumulative P&L line** — running total equity curve
+- **Exit reasons pie** — trail stop / force exit / Claude exit / macro risk-off
+- **Signal source P&L** — morning scan vs Discord vs Twitter performance
+- **Win/loss distribution** — histogram of trade outcomes
+- **Per-ticker table** — win%, avg P&L, total P&L per stock
+- **Full trade log** — every closed trade with source badge
+
+---
+
 ## Config
 
 All settings in `.env` — see `.env` for full list. Key vars:
