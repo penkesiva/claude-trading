@@ -139,6 +139,45 @@ def get_entry_decision(
         }
 
     bars        = get_stock_bars(ticker, timeframe="5Min", limit=20)
+
+    # ── Pre-Claude gate 1: momentum confirmation ──────────────
+    # The most recent completed 5-min bar must close >= open (green candle).
+    # Analyst-signal entries get a pass — the signal itself is the catalyst.
+    if bars and not analyst_signal:
+        last_bar = bars[0]   # bars are newest-first (sort=desc)
+        bar_open  = float(last_bar.get("o", 0))
+        bar_close = float(last_bar.get("c", 0))
+        if bar_open > 0 and bar_close < bar_open:
+            print(f"   ⏭️  {ticker}: last 5-min bar is red (O={bar_open:.2f} C={bar_close:.2f}) — skip")
+            return {
+                "action":          "SKIP",
+                "ticker":          ticker,
+                "entry_rationale": f"momentum: last bar red O={bar_open:.2f} C={bar_close:.2f}",
+            }
+
+    # ── Pre-Claude gate 2: dollar volume filter ────────────────
+    # Skip tickers where the last 5-min bar traded < $2M notional.
+    # This avoids thin markets where our $2k order creates real slippage.
+    # Analyst-signal entries get a smaller threshold ($500k) — urgency overrides.
+    min_dollar_vol = float(getattr(config, "STOCK_MIN_BAR_DOLLAR_VOL", 2_000_000))
+    if analyst_signal:
+        min_dollar_vol = min(min_dollar_vol, 500_000)
+    if bars:
+        last_bar   = bars[0]
+        bar_shares = float(last_bar.get("v", 0))
+        bar_price  = float(last_bar.get("c", 0))
+        dollar_vol = bar_shares * bar_price
+        if dollar_vol > 0 and dollar_vol < min_dollar_vol:
+            print(
+                f"   ⏭️  {ticker}: dollar volume ${dollar_vol:,.0f} < "
+                f"${min_dollar_vol:,.0f} minimum — too thin, skip"
+            )
+            return {
+                "action":          "SKIP",
+                "ticker":          ticker,
+                "entry_rationale": f"thin market: 5-min vol ${dollar_vol:,.0f} < ${min_dollar_vol:,.0f}",
+            }
+
     news        = get_market_news(tickers=[ticker], hours_back=4)
     pst         = pytz.timezone(config.TIMEZONE)
     now_pst     = datetime.now(pst).strftime("%H:%M")

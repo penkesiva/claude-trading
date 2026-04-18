@@ -424,8 +424,9 @@ def run():
 
     # ── Reset daily state ─────────────────────────────────
     reset_daily()
-    state["force_exit_done"] = False
-    state["closed_today"]    = set()
+    state["force_exit_done"]  = False
+    state["winner_exit_done"] = False
+    state["closed_today"]     = set()
 
     # ── Live mode: reconcile any positions already open in Alpaca ──
     # If the bot crashed and restarted mid-session it could have open
@@ -485,14 +486,52 @@ def run():
             print("🏁 Market closed.")
             break
 
-        # Force exit window (configurable, default 12:45 PST)
-        # The flag ensures we attempt force-close exactly once per session
+        # ── Two-wave force exit ────────────────────────────────
+        # Wave 1 (STOCK_FORCE_EXIT_TIME, default 12:55 PST):
+        #   Close all flat/losing positions immediately.
+        #   Winners (pnl > 0) get to run to Wave 2.
+        # Wave 2 (STOCK_WINNER_EXIT_TIME, default 12:58 PST):
+        #   Close everything that's still open — no exceptions.
+        # The flags ensure each wave fires exactly once per session.
+
+        winner_exit_time = getattr(config, "STOCK_WINNER_EXIT_TIME", "12:58")
+
+        if now >= winner_exit_time and not state.get("winner_exit_done"):
+            if state["trackers"]:
+                print(f"⏰ Final exit ({winner_exit_time} PST) — closing remaining winners")
+                log_event(f"FINAL EXIT {winner_exit_time} PST — closing {len(state['trackers'])} remaining position(s)")
+                for ticker in list(state["trackers"].keys()):
+                    execute_exit(ticker, f"final exit at {winner_exit_time} PST")
+            state["winner_exit_done"] = True
+            state["force_exit_done"]  = True
+            continue
+
         if now >= config.STOCK_FORCE_EXIT_TIME and not state.get("force_exit_done"):
             if state["trackers"]:
-                print(f"⏰ Force exit time ({now} PST) — closing all positions")
-                log_event(f"FORCE EXIT {now} PST — closing {len(state['trackers'])} position(s)")
-                for ticker in list(state["trackers"].keys()):
-                    execute_exit(ticker, f"force exit at {now} PST")
+                # Split: exit losers/flat now, hold winners for wave 2
+                winners = []
+                to_close = []
+                for ticker, tracker in state["trackers"].items():
+                    quote = get_stock_quote(ticker)
+                    price = float(quote.get("mid") or 0)
+                    if price and price > tracker.entry_price:
+                        winners.append(ticker)
+                    else:
+                        to_close.append(ticker)
+
+                if to_close:
+                    print(f"⏰ Force exit ({now} PST) — closing {len(to_close)} flat/losing position(s)")
+                    log_event(f"FORCE EXIT {now} PST — closing losers: {', '.join(to_close)}")
+                    for ticker in to_close:
+                        execute_exit(ticker, f"force exit at {now} PST")
+
+                if winners:
+                    print(
+                        f"   🏃 Letting {len(winners)} winner(s) run to {winner_exit_time} PST: "
+                        f"{', '.join(winners)}"
+                    )
+                    log_event(f"HOLDING winners until {winner_exit_time}: {', '.join(winners)}")
+
             state["force_exit_done"] = True
             continue  # skip new-entry logic for the rest of this tick
 

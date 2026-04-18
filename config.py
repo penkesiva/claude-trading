@@ -99,8 +99,10 @@ STOCK_MAX_TRADES_PER_DAY = int(os.getenv("STOCK_MAX_TRADES_PER_DAY",      10))
 STOCK_MAX_DAILY_LOSS_USD = float(os.getenv("STOCK_MAX_DAILY_LOSS_USD",    500))
 STOCK_INITIAL_STOP_PCT   = float(os.getenv("STOCK_INITIAL_STOP_PCT",      -5.0))
 STOCK_TRAIL_PCT          = float(os.getenv("STOCK_TRAIL_PCT",               3.0))  # % below peak
-STOCK_NO_NEW_TRADES_TIME = os.getenv("STOCK_NO_NEW_TRADES_PST",        "12:30")
-STOCK_FORCE_EXIT_TIME    = os.getenv("STOCK_FORCE_EXIT_PST",           "12:45")
+STOCK_NO_NEW_TRADES_TIME    = os.getenv("STOCK_NO_NEW_TRADES_PST",        "12:30")
+STOCK_FORCE_EXIT_TIME       = os.getenv("STOCK_FORCE_EXIT_PST",           "12:45")
+STOCK_MIN_BAR_DOLLAR_VOL    = float(os.getenv("STOCK_MIN_BAR_DOLLAR_VOL", 2_000_000))  # thin market filter
+STOCK_WINNER_EXIT_TIME      = os.getenv("STOCK_WINNER_EXIT_PST",          "12:58")     # winners run until here
 
 def validate():
     """Validate all required config is present on startup"""
