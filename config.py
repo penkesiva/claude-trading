@@ -103,6 +103,8 @@ STOCK_NO_NEW_TRADES_TIME    = os.getenv("STOCK_NO_NEW_TRADES_PST",        "12:30
 STOCK_FORCE_EXIT_TIME       = os.getenv("STOCK_FORCE_EXIT_PST",           "12:45")
 STOCK_MIN_BAR_DOLLAR_VOL    = float(os.getenv("STOCK_MIN_BAR_DOLLAR_VOL", 2_000_000))  # thin market filter
 STOCK_WINNER_EXIT_TIME      = os.getenv("STOCK_WINNER_EXIT_PST",          "12:58")     # winners run until here
+STOCK_NO_PROGRESS_MINS      = float(os.getenv("STOCK_NO_PROGRESS_MINS",       30))     # minutes before no-progress tightening
+STOCK_NO_PROGRESS_STOP_PCT  = float(os.getenv("STOCK_NO_PROGRESS_STOP_PCT", -1.5))     # tightened stop if no progress
 
 def validate():
     """Validate all required config is present on startup"""

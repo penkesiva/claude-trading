@@ -11,15 +11,23 @@ How the trailing stop works:
   the position is always protected STOCK_TRAIL_PCT% below whatever the
   all-time high of the trade was.
 
-  Example (trail = 3%, initial stop = −5%):
+  Example (trail = 2.5%, initial stop = −5%):
     Entry $100  → stop $95.00  (initial)
-    Peak  $102  → stop $98.94  (trail kicks in: $102 × 0.97)
-    Peak  $104.90 → stop $101.75  (profit locked, no cliff!)
-    Price falls to $101.75 → EXIT at +1.75%
+    Peak  $102  → stop $99.45  (trail kicks in: $102 × 0.975)
+    Peak  $104.90 → stop $102.28  (profit locked, no cliff!)
+    Price falls to $102.28 → EXIT at +2.28%
+
+  No-progress exit:
+    If the stock never traded above entry price after STOCK_NO_PROGRESS_MINS
+    (default 30 min), the stop is tightened to STOCK_NO_PROGRESS_STOP_PCT
+    (default −1.5%) — "thesis is wrong, cut losses faster".
+    Fires only once per position. Does not apply if stock already moved up.
 
   Configurable via .env:
-    STOCK_INITIAL_STOP_PCT=-5   (starting floor, default −5%)
-    STOCK_TRAIL_PCT=3           (trail distance below peak, default 3%)
+    STOCK_INITIAL_STOP_PCT=-5        (starting floor, default −5%)
+    STOCK_TRAIL_PCT=2.5              (trail distance below peak, default 2.5%)
+    STOCK_NO_PROGRESS_MINS=30        (minutes before no-progress tightening)
+    STOCK_NO_PROGRESS_STOP_PCT=-1.5  (tightened stop if no progress)
 
 Stops only ever move UP — they never retreat on a pullback.
 """
@@ -62,9 +70,10 @@ class RatchetTracker:
         self.stop_price      = round(entry_price * (1 + initial_stop_pct / 100), 4)
         self.level_desc      = f"initial ({initial_stop_pct:+.0f}%)"
         self.source          = source
-        self.entry_time      = entry_time or _dt.datetime.now(
-            _pytz.timezone(_cfg.TIMEZONE)
-        ).strftime("%H:%M")
+        # Store full datetime for no-progress hold-time calculation
+        self._entry_dt       = _dt.datetime.now(_pytz.timezone(_cfg.TIMEZONE))
+        self.entry_time      = entry_time or self._entry_dt.strftime("%H:%M")
+        self._no_progress_triggered = False   # fires at most once per position
 
     # ── Public API ─────────────────────────────────────────
 
@@ -73,11 +82,36 @@ class RatchetTracker:
         Call on every price scan.
         Returns a dict — check 'exit' key to know if stop was hit.
         """
+        import datetime as _dt, pytz as _pytz
         current_price = float(current_price)
 
         # Advance the peak and continuously trail it
         if current_price > self.peak_price:
             self.peak_price = current_price
+
+        # ── No-progress tightening ────────────────────────────
+        # If the stock has never moved above entry after NO_PROGRESS_MINS,
+        # the thesis is wrong — tighten to NO_PROGRESS_STOP_PCT (-1.5%).
+        # Only fires once per position and only if stock never went up.
+        if not self._no_progress_triggered and self.peak_price <= self.entry_price:
+            no_prog_mins  = float(getattr(config, "STOCK_NO_PROGRESS_MINS",     30))
+            no_prog_stop  = float(getattr(config, "STOCK_NO_PROGRESS_STOP_PCT", -1.5))
+            tz     = getattr(config, "TIMEZONE", "America/Los_Angeles")
+            now_dt = _dt.datetime.now(_pytz.timezone(tz))
+            hold_mins = (now_dt - self._entry_dt).total_seconds() / 60
+            if hold_mins >= no_prog_mins:
+                tight_stop = round(self.entry_price * (1 + no_prog_stop / 100), 4)
+                if tight_stop > self.stop_price:
+                    old = self.stop_price
+                    self.stop_price = tight_stop
+                    self.level_desc = (
+                        f"no-progress {no_prog_mins:.0f}min ({no_prog_stop:+.1f}%)"
+                    )
+                    self._no_progress_triggered = True
+                    print(
+                        f"   ⏱️  {self.ticker} no progress after {hold_mins:.0f}m "
+                        f"— tightening stop ${old:.2f} → ${tight_stop:.2f}"
+                    )
 
         trail_stop = round(self.peak_price * (1 - self.trail_pct / 100), 4)
         if trail_stop > self.stop_price:

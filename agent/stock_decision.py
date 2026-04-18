@@ -27,6 +27,11 @@ from tools.alpaca_stock_tools import get_stock_quote, get_stock_bars, calc_share
 from tools.news_tools import get_market_news, format_news_for_prompt
 from tools.logger import log_decision, log_error, load_ticker_profiles
 
+# Crypto-adjacent tickers that require BTC to not be in a down day
+_CRYPTO_ADJACENT = {"COIN", "MSTR", "IBIT", "HOOD"}
+_BTC_PROXY       = "IBIT"   # BTC ETF — available on Alpaca stock feed
+_BTC_DOWN_THRESH = -1.0     # % from prev close: if IBIT < this, skip crypto entries
+
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 WEB_SEARCH_TOOL = {
@@ -176,6 +181,25 @@ def get_entry_decision(
                 "action":          "SKIP",
                 "ticker":          ticker,
                 "entry_rationale": f"thin market: 5-min vol ${dollar_vol:,.0f} < ${min_dollar_vol:,.0f}",
+            }
+
+    # ── Pre-Claude gate 3: BTC sentiment for crypto-adjacent names ──
+    # COIN, MSTR, IBIT, HOOD all move with Bitcoin. If IBIT (BTC ETF)
+    # is down > 1% on the day, skip these entries — don't fight the crypto trend.
+    if ticker in _CRYPTO_ADJACENT:
+        btc_pct = _btc_day_pct()
+        if btc_pct <= _BTC_DOWN_THRESH:
+            print(
+                f"   ⏭️  {ticker}: BTC proxy ({_BTC_PROXY}) down {btc_pct:+.1f}% today "
+                f"— skip crypto entry"
+            )
+            return {
+                "action":          "SKIP",
+                "ticker":          ticker,
+                "entry_rationale": (
+                    f"BTC down day: {_BTC_PROXY} {btc_pct:+.1f}% — "
+                    f"avoid crypto-adjacent entries"
+                ),
             }
 
     news        = get_market_news(tickers=[ticker], hours_back=4)
@@ -362,6 +386,26 @@ def monitor_stock_positions(trackers: dict, daily_pnl: float = 0.0) -> dict:
 # ──────────────────────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────────────────────
+
+def _btc_day_pct() -> float:
+    """
+    Return today's IBIT % change from previous close.
+    Uses the two most recent daily bars (today + yesterday).
+    Returns 0.0 if data is unavailable so the check is skipped gracefully.
+    """
+    try:
+        bars = get_stock_bars(_BTC_PROXY, timeframe="1Day", limit=2)
+        if len(bars) < 2:
+            return 0.0
+        # bars are newest-first; [0]=today, [1]=yesterday
+        today_close = float(bars[0].get("c", 0))
+        prev_close  = float(bars[1].get("c", 0))
+        if prev_close <= 0:
+            return 0.0
+        return round((today_close - prev_close) / prev_close * 100, 2)
+    except Exception:
+        return 0.0
+
 
 def _format_all_profiles_for_scan(profiles: dict) -> str:
     """
