@@ -40,7 +40,25 @@ class RatchetTracker:
         self.shares          = int(shares)
         self.peak_price      = float(entry_price)
         initial_stop_pct     = float(getattr(config, "STOCK_INITIAL_STOP_PCT", -5.0))
-        self.trail_pct       = float(getattr(config, "STOCK_TRAIL_PCT", 3.0))
+        global_trail         = float(getattr(config, "STOCK_TRAIL_PCT", 2.5))
+
+        # Use per-ticker suggested trail from learning profiles if available
+        # (requires ≥ 3 past trades with that ticker — avoids reacting to noise)
+        try:
+            from tools.logger import load_ticker_profiles
+            profile  = load_ticker_profiles().get(self.ticker, {})
+            learned  = profile.get("suggested_trail_pct")
+            n_trades = profile.get("trades", 0)
+            if learned and n_trades >= 3:
+                self.trail_pct   = float(learned)
+                self._trail_src  = f"learned ({n_trades} trades)"
+            else:
+                self.trail_pct   = global_trail
+                self._trail_src  = "global config"
+        except Exception:
+            self.trail_pct  = global_trail
+            self._trail_src = "global config"
+
         self.stop_price      = round(entry_price * (1 + initial_stop_pct / 100), 4)
         self.level_desc      = f"initial ({initial_stop_pct:+.0f}%)"
         self.source          = source
@@ -105,7 +123,8 @@ class RatchetTracker:
             f"{self.ticker} | {self.shares}sh | "
             f"entry ${self.entry_price:.2f} | "
             f"peak ${self.peak_price:.2f} | "
-            f"stop ${self.stop_price:.2f} [{self.level_desc}]"
+            f"stop ${self.stop_price:.2f} [{self.level_desc}] | "
+            f"trail {self.trail_pct:.1f}% [{self._trail_src}]"
         )
 
 

@@ -25,7 +25,7 @@ from prompts.stock_system_prompt import (
 )
 from tools.alpaca_stock_tools import get_stock_quote, get_stock_bars, calc_share_count
 from tools.news_tools import get_market_news, format_news_for_prompt
-from tools.logger import log_decision, log_error
+from tools.logger import log_decision, log_error, load_ticker_profiles
 
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -53,10 +53,17 @@ def run_morning_scan() -> dict:
     print(f"   📰 {len(news)} news articles loaded")
     news_summary = format_news_for_prompt(news, max_articles=25)
 
+    # Load accumulated ticker history so Claude can factor in our past performance
+    profiles = load_ticker_profiles()
+    history_block = _format_all_profiles_for_scan(profiles)
+    if history_block:
+        print(f"   📚 Loaded history for {len(profiles)} ticker(s)")
+
     prompt = MORNING_SCAN_PROMPT.format(
         time_pst=now.strftime("%H:%M"),
         date=date.today().strftime("%B %d, %Y"),
         news_summary=news_summary,
+        ticker_history=history_block,
     )
 
     try:
@@ -136,6 +143,8 @@ def get_entry_decision(
     pst         = pytz.timezone(config.TIMEZONE)
     now_pst     = datetime.now(pst).strftime("%H:%M")
     market_sum  = morning_thesis.get("market_summary", "")
+    profiles    = load_ticker_profiles()
+    ticker_hist = _format_ticker_profile_for_entry(ticker, profiles)
     # Use real tracked exposure from stock_loop state if available; fall back to estimate
     try:
         from agent.stock_loop import state as _loop_state
@@ -165,6 +174,7 @@ def get_entry_decision(
         bias=bias,
         market_summary=market_sum,
         analyst_signal_block=sig_block,
+        ticker_history=ticker_hist,
         price_data=json.dumps({"bid": quote.get("bid"), "ask": quote.get("ask"), "mid": price}, indent=2),
         bars_summary=_format_bars(bars),
         news_context=format_news_for_prompt(news, max_articles=6),
@@ -313,6 +323,67 @@ def monitor_stock_positions(trackers: dict, daily_pnl: float = 0.0) -> dict:
 # ──────────────────────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────────────────────
+
+def _format_all_profiles_for_scan(profiles: dict) -> str:
+    """
+    Compact table of every ticker we've traded before — injected into the
+    morning scan prompt so Claude knows our historical win/loss per stock.
+    """
+    if not profiles:
+        return ""
+    lines = ["OUR TRADING HISTORY (learned from past sessions):"]
+    for ticker, p in sorted(profiles.items(), key=lambda x: -x[1].get("total_pnl", 0)):
+        n      = p.get("trades", 0)
+        wr     = p.get("win_rate", 0) * 100
+        avg    = p.get("avg_pnl", 0)
+        total  = p.get("total_pnl", 0)
+        best   = p.get("best_source") or "—"
+        trail  = p.get("suggested_trail_pct")
+        warn   = "⚠️  poor history — skip unless very strong catalyst" if wr < 40 and n >= 3 else ""
+        trail_note = f"  suggested trail {trail}%" if trail else ""
+        lines.append(
+            f"  {ticker:<6} {n:>2} trades | win {wr:>3.0f}% | "
+            f"avg P&L ${avg:+.2f} | total ${total:+.2f} | "
+            f"best src: {best}{trail_note}  {warn}"
+        )
+    return "\n".join(lines)
+
+
+def _format_ticker_profile_for_entry(ticker: str, profiles: dict) -> str:
+    """
+    Single-ticker history block injected into the entry decision prompt.
+    Returns empty string if no history yet.
+    """
+    p = profiles.get(ticker.upper())
+    if not p or p.get("trades", 0) == 0:
+        return ""
+    n     = p["trades"]
+    wr    = p["win_rate"] * 100
+    avg   = p["avg_pnl"]
+    total = p["total_pnl"]
+    hold  = p.get("avg_hold_mins")
+    trail = p.get("suggested_trail_pct")
+    best  = p.get("best_source") or "—"
+    dates = p.get("trade_dates", [])
+
+    lines = [
+        f"\nOUR HISTORY WITH {ticker} ({n} past trades, {len(dates)} day(s)):",
+        f"  Win rate: {wr:.0f}%  |  Avg P&L: ${avg:+.2f}  |  Total P&L: ${total:+.2f}",
+    ]
+    if hold:
+        lines.append(f"  Avg hold: {hold}m  |  Best signal source: {best}")
+    if trail:
+        lines.append(
+            f"  Suggested trail stop: {trail}% "
+            f"(calibrated to this ticker's typical intraday move)"
+        )
+    if wr < 40 and n >= 3:
+        lines.append(
+            f"  ⚠️  CAUTION: {ticker} has a poor win rate ({wr:.0f}%) in our history. "
+            f"Require a very strong, specific catalyst before entering."
+        )
+    return "\n".join(lines)
+
 
 def _extract_text(blocks) -> str:
     last = ""

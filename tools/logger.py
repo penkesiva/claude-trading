@@ -3,12 +3,13 @@ tools/logger.py
 Structured logging for trades, decisions, errors, and daily P&L.
 
 Files written to logs/:
-  YYYY-MM-DD.log  — human-readable event log for each trading day
-  trades.csv      — one row per completed trade (for the dashboard)
-  trades.json     — full trade detail (JSON)
-  decisions.json  — Claude reasoning log
-  errors.json     — error log
-  pnl.json        — daily P&L history
+  YYYY-MM-DD.log       — human-readable event log for each trading day
+  trades.csv           — one row per completed trade (for the dashboard)
+  ticker_profiles.json — per-ticker learning: win rate, avg P&L, suggested trail %
+  trades.json          — full trade detail (JSON)
+  decisions.json       — Claude reasoning log
+  errors.json          — error log
+  pnl.json             — daily P&L history
 """
 
 import csv
@@ -206,3 +207,133 @@ def log_news(scan_type: str, headlines: list, thesis: str):
         "thesis":     thesis,
     }
     _append_json(_log_path("news.json"), entry)
+
+
+# ──────────────────────────────────────────────────────────
+# PER-TICKER LEARNING PROFILES  (logs/ticker_profiles.json)
+# ──────────────────────────────────────────────────────────
+
+_PROFILES_FILE = "ticker_profiles.json"
+
+
+def load_ticker_profiles() -> dict:
+    """
+    Load per-ticker performance profiles from logs/ticker_profiles.json.
+    Returns an empty dict if the file doesn't exist yet.
+    """
+    path = os.path.join(LOG_DIR, _PROFILES_FILE)
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r") as f:
+        try:
+            return json.load(f)
+        except Exception:
+            return {}
+
+
+def update_ticker_profiles() -> dict:
+    """
+    Read ALL rows in logs/trades.csv, compute per-ticker stats, and write
+    logs/ticker_profiles.json.  Called at end of every trading session and
+    by dashboard/generate.py so the bot learns incrementally day over day.
+
+    Stats computed per ticker:
+      trades, wins, win_rate, total_pnl, avg_pnl, avg_win, avg_loss
+      avg_hold_mins, avg_win_pct (typical winning move size)
+      suggested_trail_pct  (calibrated to actual price behaviour)
+      by_source (P&L + win rate per signal source)
+      best_source, last_traded, trade_dates
+    """
+    _ensure_logs()
+    if not os.path.exists(_TRADES_CSV):
+        return {}
+
+    # Load all trades from CSV
+    trades: list[dict] = []
+    with open(_TRADES_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                row["pnl"]         = float(row.get("pnl") or 0)
+                row["pnl_pct"]     = float(row.get("pnl_pct") or 0)
+                row["shares"]      = int(row.get("shares") or 0)
+                row["entry_price"] = float(row.get("entry_price") or 0)
+                row["exit_price"]  = float(row.get("exit_price") or 0)
+                trades.append(row)
+            except Exception:
+                pass
+
+    if not trades:
+        return {}
+
+    profiles: dict = {}
+    tickers = sorted({t["ticker"] for t in trades if t.get("ticker")})
+
+    for ticker in tickers:
+        tt     = [t for t in trades if t["ticker"] == ticker]
+        wins   = [t for t in tt if t["pnl"] > 0]
+        losses = [t for t in tt if t["pnl"] <= 0]
+
+        # ── Hold time ──
+        hold_mins: list[int] = []
+        for t in tt:
+            hm = str(t.get("held_mins") or "").replace("m", "").strip()
+            if hm.isdigit():
+                hold_mins.append(int(hm))
+
+        # ── Source breakdown ──
+        by_source: dict = {}
+        for t in tt:
+            raw = (t.get("source") or "morning scan")
+            src = raw.split(":")[0].strip().lower()
+            if src not in by_source:
+                by_source[src] = {"trades": 0, "wins": 0, "pnl": 0.0}
+            by_source[src]["trades"] += 1
+            if t["pnl"] > 0:
+                by_source[src]["wins"] += 1
+            by_source[src]["pnl"] = round(by_source[src]["pnl"] + t["pnl"], 2)
+
+        # Best source: highest win rate among sources with ≥ 2 trades
+        eligible = [(s, d) for s, d in by_source.items() if d["trades"] >= 2]
+        best_src = (
+            max(eligible, key=lambda x: x[1]["wins"] / x[1]["trades"])[0]
+            if eligible else None
+        )
+
+        # ── Avg winning move size ──
+        win_pcts    = [t["pnl_pct"] for t in wins if t["pnl_pct"] > 0]
+        avg_win_pct = round(sum(win_pcts) / len(win_pcts), 2) if win_pcts else 0.0
+
+        # ── Suggested trail % ──
+        # Logic: trail at ~55% of the typical winning move, clamped 1.0–4.0%.
+        # Requires ≥ 3 trades to avoid noise.
+        suggested_trail: float | None = None
+        if len(tt) >= 3 and avg_win_pct > 0:
+            suggested_trail = round(max(1.0, min(4.0, avg_win_pct * 0.55)), 1)
+
+        profiles[ticker] = {
+            "trades":               len(tt),
+            "wins":                 len(wins),
+            "losses":               len(losses),
+            "win_rate":             round(len(wins) / len(tt), 3) if tt else 0,
+            "total_pnl":            round(sum(t["pnl"] for t in tt), 2),
+            "avg_pnl":              round(sum(t["pnl"] for t in tt) / len(tt), 2) if tt else 0,
+            "avg_win":              round(sum(t["pnl"] for t in wins) / len(wins), 2) if wins else 0,
+            "avg_loss":             round(sum(t["pnl"] for t in losses) / len(losses), 2) if losses else 0,
+            "avg_hold_mins":        int(sum(hold_mins) / len(hold_mins)) if hold_mins else None,
+            "avg_win_pct":          avg_win_pct,
+            "suggested_trail_pct":  suggested_trail,
+            "by_source":            by_source,
+            "best_source":          best_src,
+            "last_traded":          max(t["date"] for t in tt),
+            "trade_dates":          sorted({t["date"] for t in tt}),
+        }
+
+    path = _log_path(_PROFILES_FILE)
+    with open(path, "w") as f:
+        json.dump(profiles, f, indent=2, default=str)
+
+    tickers_str = ", ".join(profiles.keys())
+    print(f"   📊 Ticker profiles updated ({len(profiles)} tickers): {tickers_str}")
+    log_event(f"PROFILES updated for {len(profiles)} ticker(s): {tickers_str}")
+    return profiles

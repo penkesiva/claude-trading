@@ -186,6 +186,15 @@ def main():
     trades = load_trades()
     print_summary(trades, target_date=args.date)
 
+    # Always update ticker profiles so tomorrow's bot uses today's data
+    print("  📚 Updating ticker learning profiles…")
+    try:
+        sys.path.insert(0, ROOT)
+        from tools.logger import update_ticker_profiles
+        update_ticker_profiles()
+    except Exception as e:
+        print(f"  ⚠️  Profile update failed: {e}")
+
     if args.summary:
         return
 

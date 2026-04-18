@@ -26,7 +26,7 @@ from tools.alpaca_stock_tools import (
     get_order_fill,
     get_stock_quote,
 )
-from tools.logger import log_trade, log_error, log_pnl, log_event
+from tools.logger import log_trade, log_error, log_pnl, log_event, update_ticker_profiles
 from tools.signal_queue import drain as drain_signals, mark_acted, already_acted, reset_daily
 
 # ── Shared state ───────────────────────────────────────────
@@ -136,7 +136,7 @@ def execute_entry(ticker: str, decision: dict, signal_source: str = "morning sca
     print(
         f"\n  ✅ ENTERED  {ticker}{dry_tag}"
         f"\n     {shares}sh @ ${fill_price:.2f}{slippage_str}  =  ${fill_price*shares:,.0f}"
-        f"\n     stop ${tracker.stop_price:.2f}  |  conf {confidence:.0%}"
+        f"\n     stop ${tracker.stop_price:.2f}  |  trail {tracker.trail_pct:.1f}% [{tracker._trail_src}]  |  conf {confidence:.0%}"
         f"\n     catalyst: {(decision.get('news_thesis') or decision.get('entry_rationale') or '')[:80]}"
         f"\n     source: {signal_source}  |  time: {now_str} PST"
     )
@@ -600,3 +600,10 @@ def run():
     print(f"   Daily P&L: ${risk_manager.daily_pnl:+.2f}  |  Trades: {risk_manager.trades_today}")
     print("=" * 60)
     log_pnl(risk_manager.daily_pnl, risk_manager.trades_today)
+
+    # Update per-ticker learning profiles from the full trades.csv history
+    print("\n📚 Updating ticker learning profiles…")
+    try:
+        update_ticker_profiles()
+    except Exception as e:
+        print(f"   ⚠️  Profile update failed: {e}")

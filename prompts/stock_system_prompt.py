@@ -80,8 +80,12 @@ Today: {date}
 Recent market news (last 12 hours):
 {news_summary}
 
+{ticker_history}
+
 Analyze the news and identify 3-5 stocks with the strongest directional setups today.
 Consider: tech launches, earnings, government contracts, geopolitical events, sector catalysts.
+Use our trading history above to avoid tickers with poor win rates unless there is a very
+strong, specific catalyst today that is different from previous sessions.
 
 Return ONLY a valid JSON object:
 {{
@@ -109,7 +113,8 @@ Current time: {time_pst} PST
 Ticker: {ticker}
 Morning bias: {bias}
 Market context: {market_summary}
-{analyst_signal_block}
+{analyst_signal_block}{ticker_history}
+
 Current quote:
 {price_data}
 
