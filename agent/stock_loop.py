@@ -28,6 +28,8 @@ from tools.alpaca_stock_tools import (
 )
 from tools.logger import log_trade, log_error, log_pnl, log_event, update_ticker_profiles
 from tools.signal_queue import drain as drain_signals, mark_acted, already_acted, reset_daily
+from prompts.stock_system_prompt import TIER_1_TICKERS as _TIER_1_SET
+_TIER_1_SET = set(_TIER_1_SET)
 
 # ── Shared state ───────────────────────────────────────────
 state = {
@@ -319,15 +321,25 @@ def process_analyst_signals():
 
         mark_acted(ticker)
 
-        print(f"\n  📣 CALL signal  {ticker} from {src_display} (conf {sig['confidence']:.0%})")
+        is_tier1 = ticker in _TIER_1_SET
+        tier1_tag = " [Tier 1]" if is_tier1 else ""
+        print(f"\n  📣 CALL signal  {ticker}{tier1_tag} from {src_display} (conf {sig['confidence']:.0%})")
         print(f"     \"{sig['raw_text'][:100]}\"")
-        log_event(f"SIGNAL CALL {ticker} from {src_display} (conf {sig['confidence']:.0%}): {sig['raw_text'][:100]}")
+        log_event(f"SIGNAL CALL {ticker}{tier1_tag} from {src_display} (conf {sig['confidence']:.0%}): {sig['raw_text'][:100]}")
 
         watchlist_entry = next(
             (s for s in thesis.get("watchlist", []) if s.get("ticker") == ticker),
             None,
         )
-        bias = watchlist_entry.get("bias", "bullish") if watchlist_entry else "bullish"
+        if watchlist_entry:
+            bias = watchlist_entry.get("bias", "bullish")
+        elif is_tier1:
+            # Tier 1 tickers don't need to be on the morning watchlist —
+            # the analyst signal itself is the directional catalyst.
+            bias = "bullish"
+            print(f"     → Tier 1 analyst pick: proceeding without morning watchlist entry")
+        else:
+            bias = "bullish"
 
         decision = get_entry_decision(
             ticker=ticker,

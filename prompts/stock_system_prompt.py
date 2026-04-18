@@ -3,36 +3,56 @@ prompts/stock_system_prompt.py
 System prompt and decision prompts for the stock day-trading agent.
 """
 
-# ── Tradeable universe ──────────────────────────────────────
-# Liquid, large-cap stocks across sectors the agent monitors.
-# Claude picks from news-driven context within this universe.
-STOCK_UNIVERSE = [
-    # Mega-cap tech
-    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
-    # Semiconductors
-    "AMD", "INTC", "AVGO", "QCOM", "MU", "AMAT", "LRCX",
+# ── Tier 1: Analyst-preferred tickers ───────────────────────
+# Frequently traded by Ashley (ashleytheprotrader), Kira (KirasEpicTrades),
+# and unusual_whales. A CALL signal from any monitored analyst on these
+# triggers a Claude entry check even if the ticker wasn't on the morning
+# watchlist — the analyst signal IS the catalyst.
+TIER_1_TICKERS = [
+    # Ashley + Kira core names
+    "NVDA", "AMD", "TSLA", "AAPL", "META", "MSFT", "GOOGL", "AMZN",
+    # Crypto / BTC-adjacent (Kira)
+    "COIN", "IBIT", "MSTR",
+    # Cybersecurity (Ashley + unusual_whales flow)
+    "PLTR", "CRWD", "PANW", "NET",
+    # Semis (Ashley)
+    "AVGO", "AMAT", "MU", "ARM", "SMCI",
+    # Logistics / Consumer (Ashley)
+    "FDX", "UPS", "WMT",
+    # Fintech (unusual_whales flow)
+    "HOOD", "V", "MA",
+]
+
+# ── Full tradeable universe ──────────────────────────────────
+# All tickers the signal parser and morning scan may consider.
+# Tier 1 tickers are included automatically.
+STOCK_UNIVERSE = list(dict.fromkeys([
+    # ── Tier 1 (analyst-preferred — see above) ──────────────
+    *TIER_1_TICKERS,
+
+    # ── Mega-cap tech (news-driven) ─────────────────────────
+    "INTC", "QCOM", "LRCX",
     # Cloud / Enterprise software
-    "CRM", "ORCL", "SNOW", "PLTR", "PANW", "CRWD", "ZS", "NET", "ADBE",
-    # Defense / Aerospace (war-sensitive)
-    "LMT", "RTX", "NOC", "GD", "BA", "HII", "AXON", "LDOS",
+    "CRM", "ORCL", "SNOW", "ZS", "ADBE",
+    # Defense / Aerospace (war/contract news)
+    "LMT", "RTX", "NOC", "GD", "BA", "AXON",
     # Financial
-    "JPM", "GS", "BAC", "MS", "V", "MA",
-    # Healthcare / Government-adjacent
-    "UNH", "CVS", "HCA", "ABBV", "JNJ", "PFE",
-    # Energy
+    "JPM", "GS", "BAC", "MS",
+    # Healthcare (earnings / regulatory catalyst only)
+    "UNH", "ABBV", "JNJ", "PFE",
+    # Energy (oil price moves)
     "XOM", "CVX",
     # Consumer / Retail
-    "WMT", "COST", "TGT", "HD",
+    "COST", "TGT", "HD",
     # EV / Automotive
     "RIVN", "F", "GM",
     # Media / Streaming
     "DIS", "NFLX", "SPOT",
-    # Mobility / Tech
-    "UBER", "COIN",
-    # Networking / Infrastructure
-    "ANET", "ROKU", "TTD", "RBLX", "U",
-]
-STOCK_UNIVERSE = list(dict.fromkeys(STOCK_UNIVERSE))  # deduplicate, preserve order
+    # Mobility
+    "UBER",
+    # Networking / Infra
+    "ANET", "ROKU", "TTD",
+]))
 
 
 # ── System prompt ───────────────────────────────────────────
@@ -40,6 +60,7 @@ STOCK_UNIVERSE = list(dict.fromkeys(STOCK_UNIVERSE))  # deduplicate, preserve or
 def get_stock_system_prompt(paper_mode: bool = True) -> str:
     mode = "PAPER TRADING (simulated money)" if paper_mode else "LIVE TRADING (real money)"
     universe_str = ", ".join(STOCK_UNIVERSE)
+    tier1_str    = ", ".join(TIER_1_TICKERS)
     return f"""You are an AI intraday stock-trading assistant operating in {mode}.
 
 MANDATE
@@ -58,7 +79,13 @@ SIGNAL HIERARCHY (weight in this order)
 
 TRADEABLE UNIVERSE
 Only recommend stocks from: {universe_str}
-You may also suggest other well-known S&P 500 names if strong news justifies it.
+
+TIER 1 TICKERS (analyst-preferred — lower evidence bar):
+{tier1_str}
+These are frequently traded by our signal analysts (Ashley, Kira, unusual_whales).
+When an analyst CALL signal arrives for a Tier 1 ticker, treat it as a meaningful
+directional catalyst even without independent news confirmation.
+For all other tickers, require clear independent news catalyst.
 
 HARD RULES
 - Confidence < 60% → output SKIP, never ENTER.
