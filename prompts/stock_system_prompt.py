@@ -43,7 +43,7 @@ STOCK_UNIVERSE = list(dict.fromkeys([
     # Energy (oil price moves)
     "XOM", "CVX",
     # Consumer / Retail
-    "COST", "TGT", "HD",
+    "COST", "TGT", "HD", "NKE",
     # EV / Automotive
     "RIVN", "F", "GM",
     # Media / Streaming
@@ -52,6 +52,28 @@ STOCK_UNIVERSE = list(dict.fromkeys([
     "UBER",
     # Networking / Infra
     "ANET", "ROKU", "TTD",
+    # Quantum computing (govt contracts, breakthroughs)
+    "IONQ",
+    # Bitcoin mining (BTC-correlated — BTC filter applies)
+    "IREN",
+    # Satellite / Space telecom (news-driven, volatile)
+    "ASTS",
+    # AI infrastructure / Cloud (CoreWeave — recent IPO, news-driven)
+    "CRWV",
+    # Clean energy (govt policy, energy contracts)
+    "BE",
+    # Fintech / Banking (Fed rate decisions, regulatory news)
+    "SOFI",
+    # Photonics / AI infra (moves with NVDA ecosystem)
+    "COHR",
+    # Optical networking (thin — dollar volume filter guards entries)
+    "LITE",
+    # EV battery tech (speculative, thin — dollar volume filter guards entries)
+    "QS",
+    # Storage (SanDisk spin-off, thin — dollar volume filter guards entries)
+    "SNDK",
+    # Micro-cap drone/wireless (very thin — dollar volume filter guards entries)
+    "ONDS",
 ]))
 
 

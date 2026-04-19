@@ -28,7 +28,8 @@ from tools.news_tools import get_market_news, format_news_for_prompt
 from tools.logger import log_decision, log_error, load_ticker_profiles
 
 # Crypto-adjacent tickers that require BTC to not be in a down day
-_CRYPTO_ADJACENT = {"COIN", "MSTR", "IBIT", "HOOD"}
+# IREN = Bitcoin miner, moves directly with BTC price
+_CRYPTO_ADJACENT = {"COIN", "MSTR", "IBIT", "HOOD", "IREN"}
 _BTC_PROXY       = "IBIT"   # BTC ETF — available on Alpaca stock feed
 _BTC_DOWN_THRESH = -1.0     # % from prev close: if IBIT < this, skip crypto entries
 
